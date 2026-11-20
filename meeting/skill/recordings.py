@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import contextlib
-import datetime
 import json
 import os
 from pathlib import Path
@@ -13,6 +12,8 @@ import subprocess
 import tempfile
 import time
 import uuid
+
+from wispr_activity import activity_columns, resumed_segment, timestamp_seconds
 
 HOME = Path.home()
 DATA = Path(os.environ.get("WISPR_DATA_DIR", HOME / "Library/Application Support/Wispr Flow"))
@@ -30,16 +31,24 @@ def recordings():
         columns = {row[1] for row in db.execute("PRAGMA table_info(Meetings)")}
         if not columns:
             return {}
-        conditions = ["COALESCE(isDeleted, 0) = 0", "finalized = 0", "endedAt IS NULL"]
+        db.row_factory = sqlite3.Row
+        candidates = "(finalized = 0 AND endedAt IS NULL)"
+        if "serverRecordingLive" in columns:
+            candidates += " OR serverRecordingLive = 1"
+        conditions = ["COALESCE(isDeleted, 0) = 0", "(" + candidates + ")"]
         if "isTourDemo" in columns:
             conditions.append("COALESCE(isTourDemo, 0) = 0")
         if "importSource" in columns:
             conditions.append("importSource IS NULL")
-        rows = db.execute("SELECT id, title, createdAt FROM Meetings WHERE " + " AND ".join(conditions))
+        fields = "id, title, createdAt, finalized, endedAt, " + activity_columns(columns)
+        rows = db.execute("SELECT " + fields + " FROM Meetings WHERE " + " AND ".join(conditions))
         active = {}
-        for identifier, title, created in rows:
+        for row in rows:
             try:
-                identifier = str(uuid.UUID(identifier))
+                identifier = str(uuid.UUID(row["id"]))
+                segment = resumed_segment(DATA, row)
+                if not segment and (row["finalized"] or row["endedAt"] is not None):
+                    continue
                 folder = DATA / "meetings" / identifier
                 # A local recording creates its own directory. Synced and calendar-only
                 # entries aren't evidence that this Mac is capturing the meeting.
@@ -47,10 +56,9 @@ def recordings():
                 for path in folder.iterdir():
                     with contextlib.suppress(OSError):
                         changed = max(changed, path.stat().st_mtime)
-                with contextlib.suppress(ValueError, TypeError):
-                    changed = max(changed, datetime.datetime.fromisoformat(created.replace("Z", "+00:00")).timestamp())
+                changed = max(changed, timestamp_seconds(row["createdAt"]) or 0)
                 if time.time() - changed < 600:
-                    active[identifier] = title or "Wispr meeting"
+                    active[identifier] = (row["title"] or "Wispr meeting", segment)
             except (FileNotFoundError, ValueError, TypeError, AttributeError):
                 continue
         return active
@@ -131,6 +139,14 @@ class Invitations:
         PREFERENCES.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.db = sqlite3.connect(PREFERENCES / "invitations.sqlite", isolation_level=None)
         self.db.execute("CREATE TABLE IF NOT EXISTS invitations (meeting TEXT PRIMARY KEY, status TEXT, session TEXT, since REAL)")
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            if "segment" not in {row[1] for row in self.db.execute("PRAGMA table_info(invitations)")}:
+                self.db.execute("ALTER TABLE invitations ADD COLUMN segment INTEGER NOT NULL DEFAULT 0")
+            self.db.execute("COMMIT")
+        except sqlite3.Error:
+            self.db.execute("ROLLBACK")
+            raise
         self.choices = {}
         self.next_selection = None
         self.active = {}
@@ -161,9 +177,18 @@ class Invitations:
 
     def view(self, paired):
         self.refresh()
-        rows = self.db.execute("SELECT meeting, status, session, since FROM invitations ORDER BY since DESC").fetchall()
+        rows = self.db.execute("SELECT meeting, status, session, since, segment FROM invitations ORDER BY since DESC").fetchall()
         saved = {}
-        for meeting, status, session, since in rows:
+        for meeting, status, session, since, previous_segment in rows:
+            active = self.active.get(meeting)
+            if active and active[1] != previous_segment:
+                cursor = read_object(CURSORS / (session + ".json")) if session in paired else {}
+                if cursor.get("meeting_id") == meeting and not cursor.get("stopped"):
+                    self.db.execute("UPDATE invitations SET segment=?, status='opened' WHERE meeting=? AND segment=?",
+                                    (active[1], meeting, previous_segment))
+                    self.next_selection, status = session, "opened"
+                else:
+                    continue
             if status in ("opening", "retry") and session in paired:
                 cursor = read_object(CURSORS / (session + ".json"))
                 if cursor.get("meeting_id") == meeting and not cursor.get("stopped"):
@@ -177,21 +202,24 @@ class Invitations:
                 self.next_selection = session
             saved[meeting] = status
         self.restored = True
-        for meeting, title in self.active.items():
+        for meeting, (title, segment) in self.active.items():
             status = saved.get(meeting, "new")
             if status not in ("dismissed", "opened"):
-                return {"id": meeting, "title": title, "status": status, "choices": self.choices.get(meeting, {})}
+                return {"id": meeting, "title": title, "segment": segment, "status": status, "choices": self.choices.get((meeting, segment), {})}
         return None
 
-    def respond(self, op, meeting, selected, paired):
+    def respond(self, op, meeting, selected, paired, expected_segment=None):
         meeting = str(uuid.UUID(meeting))
         self.refresh(force=True)
         if meeting not in self.active:
             raise ValueError(self.problem or "This recording has ended.")
+        segment = self.active[meeting][1]
+        if expected_segment is not None and int(expected_segment) != segment:
+            raise ValueError("The recording changed. Use the current invitation.")
         self.db.execute("BEGIN IMMEDIATE")
         request = None
         try:
-            prior = self.db.execute("SELECT status,session FROM invitations WHERE meeting=?", (meeting,)).fetchone()
+            prior = self.db.execute("SELECT status,session FROM invitations WHERE meeting=? AND segment=?", (meeting, segment)).fetchone()
             if op == "dismiss":
                 if prior and prior[0] in ("opening", "opened"):
                     raise ValueError("This conversation is already opening.")
@@ -205,7 +233,7 @@ class Invitations:
                 if selected and selected not in existing:
                     raise ValueError("That session is no longer following this meeting.")
                 if len(existing) > 1 and not selected:
-                    self.choices[meeting] = existing
+                    self.choices[meeting, segment] = existing
                     self.db.execute("COMMIT")
                     return
                 session = selected or next(iter(existing), None)
@@ -225,7 +253,8 @@ class Invitations:
                     if launch:
                         launch_claude(session, meeting, self.project)
                     status = "opening"
-            self.db.execute("INSERT OR REPLACE INTO invitations VALUES(?,?,?,?)", (meeting, status, session, time.time()))
+            self.db.execute("INSERT OR REPLACE INTO invitations(meeting,status,session,since,segment) VALUES(?,?,?,?,?)",
+                            (meeting, status, session, time.time(), segment))
             self.db.execute("COMMIT")
         except Exception:
             self.db.execute("ROLLBACK")

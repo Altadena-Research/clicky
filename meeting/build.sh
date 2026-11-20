@@ -32,6 +32,6 @@ swiftc "${compiler_options[@]}" -parse-as-library -target "$(uname -m)-apple-mac
     leanring-buddy/Triangle.swift meeting/MeetingApp.swift meeting/PanelResize.swift -o "$builddir/ClickyMeeting"
 install -m 755 "$builddir/ClickyMeeting" "$destination/Contents/MacOS/ClickyMeeting"
 install -m 644 meeting/Info.plist "$destination/Contents/Info.plist"
-install -m 644 meeting/skill/{bridge,recordings}.py "$destination/Contents/Resources/"
+install -m 644 meeting/skill/{bridge,recordings,wispr_activity}.py "$destination/Contents/Resources/"
 codesign --force --sign - "$destination"
 printf 'Built %s\n' "$destination"

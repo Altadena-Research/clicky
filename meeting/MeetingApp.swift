@@ -10,6 +10,7 @@ struct ChatLine: Decodable, Identifiable {
 struct Invitation: Decodable, Equatable {
     let id: String
     let title: String
+    let segment: Int
     let status: String
     let choices: [String: String]
 }
@@ -24,6 +25,7 @@ private struct BridgeEvent: Decodable {
     let messages: [ChatLine]?
     let invitation: Invitation?
     let project: String?
+    let resumeStatus: String?
     let detectionError: String?
     let message: String?
 }
@@ -40,6 +42,7 @@ final class MeetingStore: ObservableObject {
     @Published var error: String?
     @Published var invitation: Invitation?
     @Published var project = ""
+    @Published var resumeStatus: String?
     @Published var detectionError: String?
     var invitationChanged: (() -> Void)?
     var opened: (() -> Void)?
@@ -101,7 +104,7 @@ final class MeetingStore: ObservableObject {
 
     func respond(_ op: String, session: String? = nil) {
         guard let invitation else { return }
-        var request = ["op": op, "meeting": invitation.id]
+        var request = ["op": op, "meeting": invitation.id, "segment": String(invitation.segment)]
         request["session"] = session
         error = nil
         write(request)
@@ -159,6 +162,7 @@ final class MeetingStore: ObservableObject {
                 sending = false
             } else if event.type == "view" {
                 project = event.project ?? ""
+                resumeStatus = event.resumeStatus
                 detectionError = event.detectionError
                 let changed = invitation != event.invitation
                 invitation = event.invitation
@@ -222,7 +226,8 @@ struct InvitationView: View {
     var body: some View {
         if let invite = store.invitation {
             VStack(alignment: .leading, spacing: 5) {
-                Text(invite.status == "opening" ? "Connecting to Claude…" : "Open a Claude chat for this meeting?")
+                Text(invite.status == "opening" ? "Connecting to Claude…" :
+                        (invite.segment > 0 ? "Wispr resumed. Open the meeting chat?" : "Open a Claude chat for this meeting?"))
                     .font(.headline)
                 Text(invite.title).lineLimit(1).truncationMode(.tail)
                 if invite.status == "opening" {
@@ -282,6 +287,9 @@ struct MeetingView: View {
                 Label(store.connected ? store.label(selected) : "Session disconnected",
                       systemImage: store.connected ? "link" : "link.badge.plus")
                     .font(.caption).foregroundStyle(.secondary)
+            }
+            if let status = store.resumeStatus {
+                Label(status, systemImage: "waveform").font(.caption).foregroundStyle(.secondary)
             }
             Divider()
             ScrollViewReader { reader in

@@ -14,7 +14,7 @@ import stat
 import sys
 import uuid
 
-from recordings import Invitations
+from recordings import Invitations, read_object
 
 ROOT = Path(os.environ.get("CLICKY_RUNTIME_DIR", f"/tmp/clicky-meeting-{os.getuid()}"))
 PROJECTS = Path(os.environ.get("CLAUDE_CONFIG_DIR", str(Path.home() / ".claude"))) / "projects"
@@ -247,7 +247,14 @@ def ui():
             by_id.update((item["id"], item) for item in messages)
             combined = sorted(by_id.values(), key=lambda item: item["time"])
             labels = {session: session_info(session).get("project", "") for session in available}
-            state = {"type": "view", "sessions": available, "labels": labels, "selected": selected,
+            resume_status = None
+            if selected in available:
+                cursor = read_object(STATE / (selected + ".json"))
+                active = invitations.active.get(cursor.get("meeting_id"))
+                if active and active[1]:
+                    speech = cursor.get("resumed_segment") == active[1] and cursor.get("segment_has_speech")
+                    resume_status = "Following resumed recording" if speech else "Wispr resumed · waiting for new speech"
+            state = {"type": "view", "resumeStatus": resume_status, "sessions": available, "labels": labels, "selected": selected,
                      "connected": selected in available, "messages": combined[-40:], "invitation": invitation,
                      "project": invitations.project, "detectionError": invitations.problem}
             if state != previous:
@@ -264,7 +271,7 @@ def ui():
                     invitations.set_project(request["path"])
                     continue
                 if request["op"] in ("open", "dismiss"):
-                    invitations.respond(request["op"], request["meeting"], request.get("session"), sockets())
+                    invitations.respond(request["op"], request["meeting"], request.get("session"), sockets(), request.get("segment"))
                     continue
                 requested = session_id(request["session"])
                 if request["op"] == "select":
