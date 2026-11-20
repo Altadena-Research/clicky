@@ -1,9 +1,11 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct ChatLine: Decodable, Identifiable {
     let id: String
     let role: String
+    let images: [String]?
     let text: String
 }
 
@@ -17,6 +19,7 @@ struct Invitation: Decodable, Equatable {
 
 private struct BridgeEvent: Decodable {
     let type: String
+    let activity: String?
     let sessions: [String]?
     let labels: [String: String]?
     let selected: String?
@@ -38,6 +41,26 @@ final class MeetingStore: ObservableObject {
     @Published var connected = false
     @Published var messages: [ChatLine] = []
     @Published var draft = ""
+    @Published var images: [ChatImage] = []
+    @Published var activity = "unknown"
+    @Published var queued = false
+    private var submittedImages: [String] = []
+    private var drafts: [String: (String, [ChatImage])] = [:]
+    var busy: Bool { activity == "working" || activity == "attention" }
+    var hasDraft: Bool { !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !images.isEmpty }
+    var canStop: Bool { connected && (queued || sending || busy || activity == "sent") }
+    var canSend: Bool { connected && hasDraft && !queued && !sending && activity != "stopping" && activity != "sent" }
+    var activityLabel: String? {
+        if queued { return "Message queued" }
+        if sending { return "Sending…" }
+        switch activity {
+        case "working": return "Claude is working…"
+        case "sent": return "Sent · waiting for Claude…"
+        case "attention": return "Claude needs input in the terminal"
+        case "stopping": return "Stopping…"
+        default: return nil
+        }
+    }
     @Published var sending = false
     @Published var error: String?
     @Published var invitation: Invitation?
@@ -122,20 +145,66 @@ final class MeetingStore: ObservableObject {
         }
     }
 
-    func ask() {
-        let question = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let selected, connected, !sending, !question.isEmpty else { return }
-        guard question.count <= 4000 else { error = "Keep the question under 4,001 characters."; return }
-        sending = true
-        submitted = draft
+    func attach(_ additions: [ChatImage]) {
+        guard connected, !queued, !sending else { return }
+        guard images.count + additions.count <= 4 else { error = "Attach up to four images per message."; return }
+        images.append(contentsOf: additions)
         error = nil
-        write(["op": "ask", "session": selected, "question": question])
     }
 
-    private func write(_ request: [String: String]) {
+    func attachFiles(_ urls: [URL]) -> Bool {
+        guard connected, !queued, !sending, !urls.isEmpty else { return false }
+        do { attach(try urls.prefix(5).map(ChatImage.init(url:))) }
+        catch { self.error = error.localizedDescription; return false }
+        return true
+    }
+
+    func pickImages() {
+        guard connected else { return }
+        let chooser = NSOpenPanel()
+        chooser.allowedContentTypes = [.image]
+        chooser.allowsMultipleSelection = true
+        chooser.prompt = "Attach"
+        if chooser.runModal() == .OK {
+            _ = attachFiles(chooser.urls)
+        }
+    }
+
+    func pasteImages(from board: NSPasteboard) -> Bool {
+        guard connected, !queued, !sending else { return false }
+        do {
+            let additions = try ChatImage.fromPasteboard(board)
+            if additions.isEmpty { return false }
+            attach(additions)
+        } catch { self.error = error.localizedDescription }
+        return true
+    }
+
+    func stopReply() {
+        if queued { queued = false; return }
+        guard let selected, canStop else { return }
+        write(["op": "stop", "session": selected])
+    }
+
+    func ask() {
+        guard canSend, let selected else { return }
+        let question = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard question.count <= 4000 else { error = "Keep the question under 4,001 characters."; return }
+        if busy { queued = true; return }
+        do {
+            for image in images { try image.save(for: selected) }
+        } catch { self.error = error.localizedDescription; return }
+        sending = true
+        submitted = draft
+        submittedImages = images.map(\.id)
+        error = nil
+        write(["op": "ask", "session": selected, "question": question, "images": submittedImages])
+    }
+
+    private func write(_ request: [String: Any]) {
         do {
             guard process?.isRunning == true else { throw CocoaError(.fileWriteUnknown) }
-            var bytes = try JSONEncoder().encode(request)
+            var bytes = try JSONSerialization.data(withJSONObject: request)
             bytes.append(10)
             try input.fileHandleForWriting.write(contentsOf: bytes)
         } catch {
@@ -158,7 +227,13 @@ final class MeetingStore: ObservableObject {
                 error = nil
                 opened?()
             } else if event.type == "sent" {
-                if draft == submitted && selected == event.session { draft = "" }
+                if selected == event.session {
+                    if draft == submitted { draft = "" }
+                    images.removeAll { submittedImages.contains($0.id) }
+                } else if let session = event.session, let saved = drafts[session] {
+                    drafts[session] = (saved.0 == submitted ? "" : saved.0,
+                                       saved.1.filter { !submittedImages.contains($0.id) })
+                }
                 sending = false
             } else if event.type == "view" {
                 project = event.project ?? ""
@@ -169,8 +244,18 @@ final class MeetingStore: ObservableObject {
                 if changed { error = nil; invitationChanged?() }
                 sessions = event.sessions ?? []
                 labels = event.labels ?? [:]
+                if selected != event.selected {
+                    if let selected { drafts[selected] = (draft, images) }
+                    let restored = event.selected.flatMap { drafts.removeValue(forKey: $0) }
+                    draft = restored?.0 ?? ""
+                    images = restored?.1 ?? []
+                    queued = false
+                }
                 selected = event.selected
                 connected = event.connected == true
+                activity = event.activity ?? "unknown"
+                if !connected { queued = false }
+                if queued && activity == "ready" { queued = false; ask() }
                 messages = event.messages ?? []
                 let assistant = messages.last { $0.role == "assistant" }
                 if let assistant, let selected, loadedSelection == selected,
@@ -307,6 +392,16 @@ struct MeetingView: View {
                                 VStack(alignment: .leading, spacing: 4) {
                                     Text(message.role == "assistant" ? "Claude" : "You")
                                         .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                                    if let paths = message.images {
+                                        HStack {
+                                            ForEach(paths, id: \.self) { path in
+                                                if let image = NSImage(contentsOfFile: path) {
+                                                    Image(nsImage: image).resizable().scaledToFit().frame(maxWidth: 90, maxHeight: 65)
+                                                        .accessibilityLabel("Attached image")
+                                                }
+                                            }
+                                        }
+                                    }
                                     ReplyText(source: message.text)
                                 }.frame(maxWidth: .infinity, alignment: .leading).id(message.id)
                             }
@@ -318,22 +413,116 @@ struct MeetingView: View {
             }
             if let error = store.error, store.invitation == nil { Text(error).foregroundStyle(.red).font(.caption) }
             Divider()
-            HStack {
-                TextField("Ask about this meeting…", text: $store.draft)
-                    .textFieldStyle(.plain).focused($typing).onSubmit { store.ask() }
-                    .disabled(!store.connected)
-                Button(action: { store.ask() }) { Image(systemName: "arrow.up.circle.fill").font(.title2) }
-                    .buttonStyle(.plain).foregroundStyle(Color.accentColor)
-                    .accessibilityLabel("Send question")
-                    .disabled(!store.connected || store.sending || store.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            if let activity = store.activityLabel {
+                HStack(spacing: 7) {
+                    if store.busy || store.activity == "stopping" {
+                        ProgressView().controlSize(.small)
+                    }
+                    Text(activity).font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                }
+            }
+            if !store.images.isEmpty {
+                HStack(spacing: 8) {
+                    ForEach(store.images) { image in
+                        ZStack(alignment: .topTrailing) {
+                            Image(nsImage: image.preview).resizable().scaledToFit().frame(width: 54, height: 42)
+                            Button { store.images.removeAll { $0.id == image.id } } label: {
+                                Image(systemName: "xmark.circle.fill").symbolRenderingMode(.palette)
+                                    .foregroundStyle(.white, .black)
+                            }.buttonStyle(.plain).help("Remove image").accessibilityLabel("Remove image")
+                                .disabled(store.queued || store.sending)
+                        }
+                    }
+                    Spacer()
+                }
+            }
+            HStack(alignment: .center, spacing: 8) {
+                Button(action: store.pickImages) { Image(systemName: "paperclip") }
+                    .buttonStyle(.plain).help("Attach images").accessibilityLabel("Attach images")
+                    .disabled(!store.connected || store.queued || store.sending)
+                    .onHover { $0 ? NSCursor.pointingHand.set() : NSCursor.arrow.set() }
+                TextField("Ask about this meeting…", text: $store.draft, axis: .vertical)
+                    .lineLimit(1...4).textFieldStyle(.plain).focused($typing)
+                    .onKeyPress(keys: [.return], phases: .down) { press in
+                        guard !press.modifiers.contains(.shift) else { return .ignored }
+                        store.ask()
+                        return .handled
+                    }
+                    .disabled(!store.connected || store.queued || store.sending)
+                if store.canStop || store.activity == "stopping" {
+                    Button(action: store.stopReply) { Image(systemName: "stop.circle.fill").font(.title2) }
+                        .buttonStyle(.plain).help(store.queued ? "Cancel queued message (Ctrl+C)" : "Stop reply (Ctrl+C)")
+                        .accessibilityLabel(store.queued ? "Cancel queued message" : "Stop reply")
+                        .disabled(!store.canStop || store.activity == "stopping")
+                        .onHover { $0 ? NSCursor.pointingHand.set() : NSCursor.arrow.set() }
+                }
+                if store.hasDraft || !store.canStop {
+                    Button(action: store.ask) { Image(systemName: "arrow.up.circle.fill").font(.title2) }
+                        .buttonStyle(.plain).foregroundStyle(Color.accentColor).accessibilityLabel("Send question")
+                        .disabled(!store.canSend).onHover { $0 ? NSCursor.pointingHand.set() : NSCursor.arrow.set() }
+                }
             }
         }.padding(18).frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(.regularMaterial).onAppear { typing = true }
+        .dropDestination(for: URL.self) { urls, _ in store.attachFiles(urls) }
     }
 }
 
-private class ChatPanel: NSPanel {
+class ChatPanel: NSPanel {
+    var clipboard: NSPasteboard = .general
     var didCollapse: (() -> Void)?
+    var meetingStore: MeetingStore?
+
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        let modifiers = event.modifierFlags.intersection([.command, .shift, .option, .control])
+        let key = event.charactersIgnoringModifiers?.lowercased()
+        guard let store = meetingStore else { return super.performKeyEquivalent(with: event) }
+        if key == "c", modifiers == .control {
+            if !event.isARepeat { store.stopReply() }
+            return true
+        }
+        if key == "v", modifiers == .control || modifiers == .command {
+            if store.pasteImages(from: clipboard) { return true }
+            if store.connected, !store.queued, !store.sending, let text = clipboard.string(forType: .string) {
+                if let editor = firstResponder as? NSTextView, editor.isEditable {
+                    editor.insertText(text, replacementRange: editor.selectedRange())
+                } else {
+                    store.draft += text
+                }
+                return true
+            }
+        }
+        if modifiers == .command, let editor = firstResponder as? NSTextView {
+            switch key {
+            case "c": editor.copy(nil); return true
+            case "x" where editor.isEditable: editor.cut(nil); return true
+            case "a": editor.selectAll(nil); return true
+            default: break
+            }
+        }
+        return super.performKeyEquivalent(with: event)
+    }
+
+    override func sendEvent(_ event: NSEvent) {
+        // AppKit handles Control-letter bindings as text editing commands on some
+        // keyboard layouts before they reach performKeyEquivalent.
+        if event.type == .keyDown, [36, 76].contains(event.keyCode), let store = meetingStore,
+           let editor = firstResponder as? NSTextView, editor.isEditable {
+            let modifiers = event.modifierFlags.intersection([.command, .shift, .option, .control])
+            if modifiers.isEmpty {
+                if !event.isARepeat { store.ask() }
+                return
+            }
+            if modifiers == .shift {
+                editor.insertText("\n", replacementRange: editor.selectedRange())
+                return
+            }
+        }
+        if event.type == .keyDown, event.modifierFlags.contains(.control),
+           performKeyEquivalent(with: event) { return }
+        super.sendEvent(event)
+    }
     override var canBecomeKey: Bool { true }
     override func cancelOperation(_ sender: Any?) { orderOut(nil); didCollapse?() }
 }
@@ -411,6 +600,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         chat = panel(size: preferred, resizable: true)
         chat.minSize = MeetingPanelSize.minimum
         chat.delegate = self
+        chat.meetingStore = store
         chat.didCollapse = { [weak self] in self?.updateInvitation() }
         chat.title = "Meeting conversation"
         let conversation = NSHostingView(rootView: MeetingView(store: store, hide: { [weak self] in self?.hideChat() }))
@@ -526,6 +716,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func applicationWillTerminate(_ notification: Notification) { store.stop() }
 }
 
+#if !TEST_COMPOSER
 @main
 struct ClickyMeeting {
     @MainActor static func main() {
@@ -535,3 +726,4 @@ struct ClickyMeeting {
         withExtendedLifetime(delegate) { app.run() }
     }
 }
+#endif

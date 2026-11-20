@@ -6,6 +6,14 @@ Clicky floats beside your other windows. When Wispr Notetaker starts a local rec
 
 Click the character to expand or collapse the chat. Drag the character to move it. Drag a panel edge or the lower-right grip to resize the conversation. Clicky remembers the size. When collapsed, new assistant replies appear briefly beside the character. When capture ends, Claude can answer follow-up questions from the same chat. The transcript watcher waits for that recording to resume, checking only recording metadata while idle. A resumed chat waits for speech after Wispr’s resume marker and keeps the earlier conversation available.
 
+## Chat controls
+
+Paste text or a copied screenshot with **⌘V** or **Ctrl+V**. On macOS, **Control–Shift–Command–4** copies a selected area to the clipboard. The paperclip and dragging image files from Finder also add images. Review the thumbnails, then press **Return** to send. **Shift–Return** adds a line. Images can be sent with or without a caption.
+
+The composer distinguishes a message waiting for Claude from a running turn. Sending a follow-up while Claude is working queues it in the current composer. **Ctrl+C** or the square **Stop** button cancels that queued send and keeps the draft. During a reply it requests an interruption in the paired terminal. Clicky waits for Claude’s status to settle. **⌘C** copies selected text.
+
+When tmux is installed, new Clicky conversations use a dedicated tmux pane inside the normal terminal window. Existing iTerm2 sessions can receive Stop through macOS Automation. If macOS declines the request or the terminal host does not support targeted input, press **Esc** in the Claude terminal. Clicky stores sent images as private PNG copies under `~/.local/state/clicky-meeting/attachments/<session-id>/` and asks that Claude conversation to read them.
+
 ## Install
 
 Requires macOS 14.2 or later, Apple’s Command Line Tools, Claude Code with the Monitor tool, Wispr Flow Notetaker and the local Wispr `/meeting` skill. Run these commands from the repository root. Apply the patch and create the skill link once.
@@ -31,6 +39,7 @@ Clicky checks the local Wispr database and recording directory metadata every th
 ```sh
 python3 -B -m unittest discover -s meeting/tests
 ./meeting/build.sh --test-resize
+./meeting/build.sh --test-composer
 ```
 
 The Python tests use synthetic Wispr recordings, cursor files and Claude logs. With the patched skill installed they also check that one watcher follows a stop and resume, and that the initial resumed snapshot excludes speech from the earlier segment. The AppKit test exercises the corner grip, minimum size and saved dimensions in an isolated panel.

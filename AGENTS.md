@@ -55,16 +55,19 @@ The optional meeting build shares the original cursor shape with the voice app. 
 | Meeting source | Approximate lines | Purpose |
 |---|---:|---|
 | `leanring-buddy/Triangle.swift` | 20 | Shared Clicky cursor shape |
-| `meeting/MeetingApp.swift` | 530 | Floating character, formatted conversation and session selection |
+| `meeting/MeetingApp.swift` | 715 | Floating character, formatted conversation and session selection |
+| `meeting/ChatImages.swift` | 73 | Screenshot decoding, previews and session-scoped PNG copies |
 | `meeting/PanelResize.swift` | 65 | Native corner grip and saved conversation size |
 | `meeting/skill/wispr_activity.py` | 40 | Shared Wispr live capture and resume detection from local metadata |
 | `meeting/skill/recordings.py` | 265 | Detect local recordings, track invitations and open the matching Claude session |
 | `meeting/wispr-skill.patch` | 262 | Pairing requests, resume boundaries and a pinned watcher for the personal Wispr skill |
-| `meeting/skill/bridge.py` | 305 | Local transport, pinned listener and transcript filtering |
+| `meeting/skill/bridge.py` | 409 | Local transport, pinned listener and transcript filtering |
+| `meeting/skill/chat_controls.py`, `stop_iterm.applescript` | 120 | Claude activity and targeted terminal interruptions |
 | `meeting/skill/SKILL.md` | 15 | Attach the question monitor inside the running session |
 | `meeting/build.sh`, `meeting/Info.plist` | 50 | Build and bundle the meeting-only app using Command Line Tools |
 | `meeting/tests/test_bridge.py`, `test_recordings.py` | 240 | Synthetic transport and invitation regression tests |
 | `meeting/tests/test_resume.py` | 125 | Wispr resume detection, segment invitations and pinned monitoring |
+| `meeting/tests/test_composer.swift` | 40 | Native clipboard handling and cancellation of queued input |
 | `meeting/tests/test_resize.swift` | 41 | Isolated AppKit resize regression test |
 
 | File | Lines | Purpose |

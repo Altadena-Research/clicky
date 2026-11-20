@@ -120,6 +120,11 @@ def launch_claude(session, meeting, project):
     with tempfile.NamedTemporaryFile(mode="w", suffix=".command", prefix="Open Meeting ", dir=PREFERENCES, delete=False) as file:
         script = Path(file.name)
         command = [cli, "--session-id", session, "--name", "Clicky Meeting", "--", "/meeting use " + meeting]
+        tmux = shutil.which("tmux", path=search)
+        if tmux:
+            # A private server per Claude session inherits only this launch's
+            # project and Wispr environment. The pane also supports targeted Stop.
+            command = [tmux, "-L", "clicky-" + session, "new-session", "-s", "meeting", "-c", str(project), *command]
         file.write('#!/bin/zsh\n/bin/rm -f -- "$0"\n')
         for name in ("WISPR_DATA_DIR", "WISPR_MEETING_STATE_DIR", "CLICKY_RUNTIME_DIR", "CLAUDE_CONFIG_DIR"):
             if name in os.environ:

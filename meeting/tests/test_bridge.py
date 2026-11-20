@@ -108,6 +108,29 @@ class MeetingBridgeTests(unittest.TestCase):
         else:
             self.fail("expected disconnect error")
 
+    def test_image_only_message_reaches_existing_listener_and_keeps_preview(self):
+        listener = self.listen()
+        ui = self.process("ui")
+        self.read(ui)
+        self.command(ui, op="select", session=self.session)
+        self.read(ui)
+        image = str(uuid.uuid4())
+        folder = Path(self.env["CLICKY_STATE_DIR"]) / "attachments" / self.session
+        folder.mkdir(parents=True)
+        path = folder / (image + ".png")
+        path.write_bytes(b"fixture")
+        self.command(ui, op="ask", session=self.session, question="", images=[image])
+        self.assertEqual(self.read(ui)["type"], "sent")
+        view = self.read(ui)
+        self.assertEqual(view["messages"][-1]["images"], [str(path)])
+        self.assertNotIn(str(path), view["messages"][-1]["text"])
+        self.assertEqual(view["activity"], "sent")
+        self.assertIn(str(path), self.read(listener)["question"])
+        self.command(ui, op="ask", session=self.session, question="", images=[str(uuid.uuid4())])
+        self.assertEqual(self.read(ui)["type"], "error")
+        self.command(ui, op="stop", session=self.other)
+        self.assertEqual(self.read(ui)["type"], "error")
+
     def test_duplicate_and_unpaired_listeners(self):
         self.listen()
         for session, error in ((self.session, "already has"), (self.other, "Start /meeting")):

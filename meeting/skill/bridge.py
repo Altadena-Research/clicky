@@ -12,9 +12,12 @@ import selectors
 import socket
 import stat
 import sys
+import subprocess
+import time
 import uuid
 
-from recordings import Invitations, read_object
+from recordings import Invitations, PREFERENCES, read_object
+from chat_controls import SessionActivity, interrupt, phase
 
 ROOT = Path(os.environ.get("CLICKY_RUNTIME_DIR", f"/tmp/clicky-meeting-{os.getuid()}"))
 PROJECTS = Path(os.environ.get("CLAUDE_CONFIG_DIR", str(Path.home() / ".claude"))) / "projects"
@@ -151,6 +154,36 @@ def transcript_path(session):
     return next(projects.glob("*/" + session + ".jsonl"), None)
 
 
+IMAGE_NOTE = "\n\n[Images attached in Clicky]\nPlease use the Read tool to view these local image files before answering:\n"
+
+
+def image_paths(session, identifiers):
+    if not isinstance(identifiers, list) or len(identifiers) > 4:
+        raise ValueError("Attach up to four images per message.")
+    folder = PREFERENCES / "attachments" / session
+    paths = []
+    for identifier in identifiers:
+        path = folder / (session_id(identifier) + ".png")
+        if path.resolve() != folder.resolve() / path.name or not path.is_file():
+            raise ValueError("An attached image is missing. Attach it again.")
+        paths.append(str(path))
+    return paths
+
+
+def chat_message(identifier, question, session, timestamp):
+    plain, marker, files = question.rpartition(IMAGE_NOTE)
+    images = []
+    if marker:
+        paths = files.splitlines()
+        try:
+            if paths == image_paths(session, [Path(path).stem for path in paths]):
+                images = paths
+                question = plain
+        except (ValueError, OSError):
+            pass
+    return {"id": identifier, "role": "user", "text": question, "images": images, "time": timestamp}
+
+
 def visible_message(row):
     role = row.get("type")
     if role not in ("user", "assistant") or row.get("isMeta") or row.get("isSidechain"):
@@ -167,6 +200,7 @@ def visible_message(row):
                 return None
             content = event["question"]
             identifier = event.get("id") or identifier
+            return chat_message(identifier, content, row.get("sessionId", ""), row.get("timestamp", ""))
         except (ValueError, KeyError, AttributeError):
             return None
     elif role == "user" and isinstance(content, list):
@@ -220,6 +254,10 @@ def ui():
     previous = None
     messages = []
     questions = {}
+    registry = SessionActivity()
+    flights = {}
+    stops = {}
+    incoming = b""
     with selectors.DefaultSelector() as selector:
         selector.register(sys.stdin, selectors.EVENT_READ)
         while True:
@@ -243,6 +281,42 @@ def ui():
                 except FileNotFoundError:
                     log = None
                     fingerprint = None
+            entry = registry.entry(selected) if selected in available else {}
+            activity = phase(entry)
+            flight = flights.get(selected)
+            if flight and selected in available:
+                seen = next((index for index, msg in enumerate(messages) if msg["id"] == flight["id"]), None)
+                answered = seen is not None and any(msg["role"] == "assistant" for msg in messages[seen + 1:])
+                later_user = seen is not None and any(msg["role"] == "user" for msg in messages[seen + 1:])
+                if later_user:
+                    flight["cancel"] = False
+                if seen is not None and not later_user and activity in ("working", "attention"):
+                    flight["started"] = True
+                    if flight.get("cancel"):
+                        flight["cancel"] = False
+                        try:
+                            interrupt(entry, selected)
+                            stops[selected] = time.monotonic()
+                        except (ValueError, OSError, subprocess.SubprocessError) as error:
+                            emit({"type": "error", "message": str(error)})
+                if (activity not in ("working", "attention") and (answered or flight.get("started"))):
+                    flights.pop(selected, None)
+                elif time.monotonic() - flight["since"] > 90 and seen is None:
+                    flights.pop(selected, None)
+                    emit({"type": "error", "message": "Claude has not acknowledged this message. Check the paired terminal."})
+                elif flight.get("cancel"):
+                    activity = "stopping"
+                elif activity in ("ready", "unknown") and not answered:
+                    activity = "sent"
+            if selected in stops:
+                if phase(entry) not in ("working", "attention"):
+                    stops.pop(selected)
+                    flights.pop(selected, None)
+                elif time.monotonic() - stops[selected] > 8:
+                    stops.pop(selected)
+                    emit({"type": "error", "message": "Claude still reports work in progress. Check the paired terminal."})
+                else:
+                    activity = "stopping"
             by_id = {item["id"]: item for item in questions.get(selected, [])}
             by_id.update((item["id"], item) for item in messages)
             combined = sorted(by_id.values(), key=lambda item: item["time"])
@@ -254,17 +328,22 @@ def ui():
                 if active and active[1]:
                     speech = cursor.get("resumed_segment") == active[1] and cursor.get("segment_has_speech")
                     resume_status = "Following resumed recording" if speech else "Wispr resumed · waiting for new speech"
-            state = {"type": "view", "resumeStatus": resume_status, "sessions": available, "labels": labels, "selected": selected,
+            state = {"type": "view", "activity": activity, "resumeStatus": resume_status, "sessions": available, "labels": labels, "selected": selected,
                      "connected": selected in available, "messages": combined[-40:], "invitation": invitation,
                      "project": invitations.project, "detectionError": invitations.problem}
             if state != previous:
                 emit(state)
                 previous = state
-            if not selector.select(1):
-                continue
-            line = sys.stdin.readline()
-            if not line:
-                return
+            if b"\n" not in incoming:
+                if not selector.select(1):
+                    continue
+                chunk = os.read(sys.stdin.fileno(), 65536)
+                if not chunk:
+                    return
+                incoming += chunk
+                if b"\n" not in incoming:
+                    continue
+            line, _, incoming = incoming.partition(b"\n")
             try:
                 request = json.loads(line)
                 if request["op"] == "project":
@@ -278,20 +357,39 @@ def ui():
                     if requested not in sockets():
                         raise ValueError("This conversation is no longer paired.")
                     selected, log, fingerprint, messages = requested, transcript_path(requested), None, []
+                elif request["op"] == "stop":
+                    if requested != selected or requested not in sockets():
+                        raise ValueError("The selected conversation disconnected.")
+                    target = registry.entry(requested)
+                    if requested in stops:
+                        continue
+                    if requested in flights and not flights[requested].get("started"):
+                        flights[requested]["cancel"] = True
+                    elif phase(target) in ("working", "attention"):
+                        interrupt(target, requested)
+                        stops[requested] = time.monotonic()
+                    else:
+                        raise ValueError("Claude has no active reply to stop.")
                 elif request["op"] == "ask":
                     if requested != selected or requested not in sockets():
                         raise ValueError("The selected conversation disconnected.")
                     question = request["question"].strip()
+                    files = image_paths(selected, request.get("images", []))
+                    if files:
+                        question = (question or "Describe the attached image.") + IMAGE_NOTE + "\n".join(files)
+                    if len(question) > MAX_QUESTION:
+                        raise ValueError("Shorten the message to make room for its image references.")
                     timestamp = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
                     result = send(selected, question)
                     if not result.get("ok"):
                         raise ValueError(result.get("error", "Delivery failed."))
                     if result.get("id"):
                         history = questions.setdefault(selected, [])
-                        history.append({"id": result["id"], "role": "user", "text": question, "time": timestamp})
+                        history.append(chat_message(result["id"], question, selected, timestamp))
+                        flights[selected] = {"id": result["id"], "since": time.monotonic()}
                         del history[:-40]
                     emit({"type": "sent", "session": selected})
-            except (ValueError, OSError, KeyError) as error:
+            except (ValueError, OSError, KeyError, subprocess.SubprocessError) as error:
                 emit({"type": "error", "message": str(error)})
 
 
