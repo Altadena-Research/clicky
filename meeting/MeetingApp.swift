@@ -7,6 +7,13 @@ struct ChatLine: Decodable, Identifiable {
     let text: String
 }
 
+struct Invitation: Decodable, Equatable {
+    let id: String
+    let title: String
+    let status: String
+    let choices: [String: String]
+}
+
 private struct BridgeEvent: Decodable {
     let type: String
     let sessions: [String]?
@@ -15,6 +22,9 @@ private struct BridgeEvent: Decodable {
     let session: String?
     let connected: Bool?
     let messages: [ChatLine]?
+    let invitation: Invitation?
+    let project: String?
+    let detectionError: String?
     let message: String?
 }
 
@@ -28,6 +38,11 @@ final class MeetingStore: ObservableObject {
     @Published var draft = ""
     @Published var sending = false
     @Published var error: String?
+    @Published var invitation: Invitation?
+    @Published var project = ""
+    @Published var detectionError: String?
+    var invitationChanged: (() -> Void)?
+    var opened: (() -> Void)?
     var receivedSuggestion: ((String) -> Void)?
     private var process: Process?
     private let input = Pipe()
@@ -45,7 +60,7 @@ final class MeetingStore: ObservableObject {
         }
         let child = Process()
         child.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
-        child.arguments = ["-u", bridge.path, "ui"]
+        child.arguments = ["-B", "-u", bridge.path, "ui"]
         child.standardInput = input
         child.standardOutput = output
         output.fileHandleForReading.readabilityHandler = { [weak self] handle in
@@ -84,6 +99,26 @@ final class MeetingStore: ObservableObject {
         write(["op": "select", "session": session])
     }
 
+    func respond(_ op: String, session: String? = nil) {
+        guard let invitation else { return }
+        var request = ["op": op, "meeting": invitation.id]
+        request["session"] = session
+        error = nil
+        write(request)
+    }
+
+    func chooseProject() {
+        let chooser = NSOpenPanel()
+        chooser.canChooseFiles = false
+        chooser.canChooseDirectories = true
+        chooser.prompt = "Use this folder"
+        chooser.directoryURL = URL(fileURLWithPath: project)
+        NSApp.activate(ignoringOtherApps: true)
+        if chooser.runModal() == .OK, let path = chooser.url?.path {
+            write(["op": "project", "path": path])
+        }
+    }
+
     func ask() {
         let question = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let selected, connected, !sending, !question.isEmpty else { return }
@@ -116,10 +151,18 @@ final class MeetingStore: ObservableObject {
             if event.type == "error" {
                 error = event.message
                 sending = false
+            } else if event.type == "opened" {
+                error = nil
+                opened?()
             } else if event.type == "sent" {
                 if draft == submitted && selected == event.session { draft = "" }
                 sending = false
             } else if event.type == "view" {
+                project = event.project ?? ""
+                detectionError = event.detectionError
+                let changed = invitation != event.invitation
+                invitation = event.invitation
+                if changed { error = nil; invitationChanged?() }
                 sessions = event.sessions ?? []
                 labels = event.labels ?? [:]
                 selected = event.selected
@@ -174,6 +217,46 @@ struct ReplyText: View {
     }
 }
 
+struct InvitationView: View {
+    @ObservedObject var store: MeetingStore
+    var body: some View {
+        if let invite = store.invitation {
+            VStack(alignment: .leading, spacing: 5) {
+                Text(invite.status == "opening" ? "Connecting to Claude…" : "Open a Claude chat for this meeting?")
+                    .font(.headline)
+                Text(invite.title).lineLimit(1).truncationMode(.tail)
+                if invite.status == "opening" {
+                    Text("Check your Claude terminal for any permission prompts.").font(.caption)
+                } else {
+                    if invite.status == "retry" {
+                        Text("Still waiting. Check Claude or run /clicky-meeting in the meeting chat.").font(.caption)
+                    } else if invite.choices.isEmpty {
+                        Text("New chats open in " + URL(fileURLWithPath: store.project).lastPathComponent)
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    HStack {
+                        if invite.choices.isEmpty {
+                            Button(invite.status == "retry" ? "Retry" : "Open") { store.respond("open") }
+                                .buttonStyle(.borderedProminent).onHover { $0 ? NSCursor.pointingHand.set() : NSCursor.arrow.set() }
+                        } else {
+                            Menu("Choose conversation") {
+                                ForEach(invite.choices.keys.sorted(), id: \.self) { session in
+                                    Button((invite.choices[session] ?? "") + " · " + session.prefix(8)) {
+                                        store.respond("open", session: session)
+                                    }
+                                }
+                            }.onHover { $0 ? NSCursor.pointingHand.set() : NSCursor.arrow.set() }
+                        }
+                        Button("Not now") { store.respond("dismiss") }
+                            .onHover { $0 ? NSCursor.pointingHand.set() : NSCursor.arrow.set() }
+                    }
+                }
+                if let error = store.error { Text(error).font(.caption).foregroundStyle(.red).lineLimit(2) }
+            }.frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+}
+
 struct MeetingView: View {
     @ObservedObject var store: MeetingStore
     let hide: () -> Void
@@ -194,6 +277,7 @@ struct MeetingView: View {
                 Button(action: hide) { Image(systemName: "xmark.circle.fill") }
                     .buttonStyle(.plain).help("Collapse").accessibilityLabel("Collapse")
             }
+            if store.invitation != nil { InvitationView(store: store) }
             if let selected = store.selected {
                 Label(store.connected ? store.label(selected) : "Session disconnected",
                       systemImage: store.connected ? "link" : "link.badge.plus")
@@ -206,7 +290,7 @@ struct MeetingView: View {
                         VStack(alignment: .leading, spacing: 8) {
                             Text(store.connected ? "Ready for your question" : "Connect your meeting").font(.headline)
                             Text(store.connected ? "Replies from this Claude conversation appear here." :
-                                "In your Claude Code terminal, run /meeting and then /clicky-meeting in the same conversation.")
+                                store.detectionError ?? "Start a Wispr Notetaker recording. Clicky will offer to open its Claude conversation.")
                                 .foregroundStyle(.secondary).textSelection(.enabled)
                         }.frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 12)
                     } else {
@@ -224,7 +308,7 @@ struct MeetingView: View {
                 }.onChange(of: store.messages.last?.id) { _, _ in reader.scrollTo("bottom") }
                 .onAppear { reader.scrollTo("bottom") }
             }
-            if let error = store.error { Text(error).foregroundStyle(.red).font(.caption) }
+            if let error = store.error, store.invitation == nil { Text(error).foregroundStyle(.red).font(.caption) }
             Divider()
             HStack {
                 TextField("Ask about this meeting…", text: $store.draft)
@@ -235,14 +319,15 @@ struct MeetingView: View {
                     .accessibilityLabel("Send question")
                     .disabled(!store.connected || store.sending || store.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
-        }.padding(18).frame(width: 410, height: 425)
+        }.padding(18).frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(.regularMaterial).onAppear { typing = true }
     }
 }
 
 private class ChatPanel: NSPanel {
+    var didCollapse: (() -> Void)?
     override var canBecomeKey: Bool { true }
-    override func cancelOperation(_ sender: Any?) { orderOut(nil) }
+    override func cancelOperation(_ sender: Any?) { orderOut(nil); didCollapse?() }
 }
 
 private final class CharacterHitArea: NSView {
@@ -290,11 +375,12 @@ private struct CharacterView: View {
 }
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private let store = MeetingStore()
     private var character: NSPanel!
     private var chat: ChatPanel!
     private var bubble: NSPanel!
+    private var invitePanel: NSPanel!
     private var menuItem: NSStatusItem!
     private var dismissBubble: DispatchWorkItem?
 
@@ -313,29 +399,61 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         character.title = "Clicky character"
         character.setFrameOrigin(NSPoint(x: area.maxX - 76, y: area.midY))
         character.setFrameAutosaveName("MeetingCharacter")
-        chat = panel(size: NSSize(width: 410, height: 425))
+        let preferred = MeetingPanelSize.preferred()
+        chat = panel(size: preferred, resizable: true)
+        chat.minSize = MeetingPanelSize.minimum
+        chat.delegate = self
+        chat.didCollapse = { [weak self] in self?.updateInvitation() }
         chat.title = "Meeting conversation"
-        chat.contentView = NSHostingView(rootView: MeetingView(store: store, hide: { [weak self] in self?.chat.orderOut(nil) }))
+        let conversation = NSHostingView(rootView: MeetingView(store: store, hide: { [weak self] in self?.hideChat() }))
+        conversation.sizingOptions = []
+        chat.contentView = conversation
+        chat.setContentSize(preferred)
+        let grip = MeetingResizeGrip(frame: NSRect(x: preferred.width - 20, y: 0, width: 20, height: 20))
+        grip.toolTip = "Drag to resize the meeting panel"
+        grip.finished = { MeetingPanelSize.save($0) }
+        // NSHostingView can use flipped coordinates. Keep the grip in the lower right.
+        grip.translatesAutoresizingMaskIntoConstraints = false
+        conversation.addSubview(grip)
+        NSLayoutConstraint.activate([
+            grip.trailingAnchor.constraint(equalTo: conversation.trailingAnchor),
+            grip.bottomAnchor.constraint(equalTo: conversation.bottomAnchor),
+            grip.widthAnchor.constraint(equalToConstant: 20),
+            grip.heightAnchor.constraint(equalToConstant: 20)
+        ])
         chat.isOpaque = false
         chat.contentView?.wantsLayer = true
         chat.contentView?.layer?.cornerRadius = 14
         chat.contentView?.layer?.masksToBounds = true
         bubble = panel(size: NSSize(width: 270, height: 66))
         bubble.ignoresMouseEvents = true
+        invitePanel = panel(size: NSSize(width: 296, height: 151))
+        invitePanel.title = "Meeting invitation"
+        invitePanel.contentView = NSHostingView(rootView: InvitationView(store: store)
+            .padding(12).frame(width: 296, height: 151, alignment: .leading)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12)))
+        store.invitationChanged = { [weak self] in self?.updateInvitation() }
+        store.opened = { [weak self] in self?.showChat() }
         store.receivedSuggestion = { [weak self] text in self?.showSuggestion(text) }
         menuItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         menuItem.button?.image = NSImage(systemSymbolName: "bubble.left.and.text.bubble.right", accessibilityDescription: "Clicky Meeting")
         let menu = NSMenu()
         menu.addItem(withTitle: "Open Meeting", action: #selector(showChat), keyEquivalent: "").target = self
+        menu.addItem(withTitle: "Choose Meeting Project…", action: #selector(chooseProject), keyEquivalent: "").target = self
         menu.addItem(withTitle: "Quit Clicky Meeting", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         menuItem.menu = menu
         character.orderFrontRegardless()
         store.start()
     }
 
-    private func panel(size: NSSize) -> ChatPanel {
+    func windowDidEndLiveResize(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow, window === chat else { return }
+        MeetingPanelSize.save(window.frame.size)
+    }
+
+    private func panel(size: NSSize, resizable: Bool = false) -> ChatPanel {
         let window = ChatPanel(contentRect: NSRect(origin: .zero, size: size),
-                               styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+                               styleMask: resizable ? [.resizable, .nonactivatingPanel] : [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         window.level = .floating
         window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         window.hidesOnDeactivate = false
@@ -345,18 +463,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return window
     }
 
+    @objc private func chooseProject() { store.chooseProject() }
+
+    private func updateInvitation() {
+        if store.invitation != nil && !chat.isVisible {
+            bubble.orderOut(nil)
+            placePanels()
+            invitePanel.orderFrontRegardless()
+        } else {
+            invitePanel.orderOut(nil)
+        }
+    }
+
+    private func hideChat() {
+        chat.orderOut(nil)
+        updateInvitation()
+    }
+
     @objc private func showChat() {
+        invitePanel.orderOut(nil)
         bubble.orderOut(nil)
         placePanels()
         chat.makeKeyAndOrderFront(nil)
     }
 
-    private func toggleChat() { if chat.isVisible { chat.orderOut(nil) } else { showChat() } }
+    private func toggleChat() { if chat.isVisible { hideChat() } else { showChat() } }
 
     private func placePanels() {
         guard let area = character.screen?.visibleFrame else { return }
-        for window in [chat, bubble].compactMap({ $0 }) {
-            let size = window.frame.size
+        for window in [chat, bubble, invitePanel].compactMap({ $0 }) {
+            let size = NSSize(width: min(window.frame.width, area.width), height: min(window.frame.height, area.height))
+            if size != window.frame.size { window.setContentSize(size) }
             let targetX = character.frame.midX > area.midX ? character.frame.minX-size.width-6 : character.frame.maxX+6
             let point = NSPoint(x: max(area.minX, min(targetX, area.maxX-size.width)),
                                 y: max(area.minY, min(character.frame.midY-size.height/2, area.maxY-size.height)))
@@ -365,7 +502,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func showSuggestion(_ text: String) {
-        guard !chat.isVisible else { return }
+        guard !chat.isVisible, store.invitation == nil else { return }
         let preview = text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
         bubble.contentView = NSHostingView(rootView: Text(preview).lineLimit(3).font(.callout)
             .padding(10).frame(width: 270, height: 66, alignment: .leading)

@@ -1,33 +1,35 @@
 # Clicky Meeting for Mac
 
-Click the blue character to open the recent conversation from the Claude Code session running your Wispr Flow `/meeting` skill. Drag it to move it. New assistant replies appear briefly beside the collapsed character. The expanded panel renders headings, bullets, emphasis, and code. Escape or the close button collapses it.
+Clicky floats beside your other windows. When Wispr Notetaker starts a local recording, the character offers to open its Claude Code conversation. Choose **Open** to pair, or **Not now** to dismiss that recording across app restarts. Ordinary Wispr dictation does not trigger an invitation.
 
-## Run the test build
+**Open** reuses a running Claude conversation following that exact recording. If several conversations match, choose one by name and session ID. With no match, Clicky opens iTerm2 (or Terminal), starts Claude Code in your selected project and runs your existing `/meeting use <recording-id>` skill. Claude’s normal permissions apply. Use **Choose Meeting Project…** in Clicky’s menu bar menu to choose where new conversations start.
 
-Requires macOS 14.2+, Apple's Command Line Tools, Claude Code with the Monitor tool, and the existing local Wispr `/meeting` skill. From the repository root:
+Click the character to expand or collapse the chat. Drag the character to move it. Drag a panel edge or the lower-right grip to resize the conversation. Clicky remembers the size. When collapsed, new assistant replies appear briefly beside the character. When the recording ends, the transcript listener finishes and the paired chat remains available for follow-up questions while Claude is running.
+
+## Install
+
+Requires macOS 14.2 or later, Apple’s Command Line Tools, Claude Code with the Monitor tool, Wispr Flow Notetaker and the local Wispr `/meeting` skill. Run these commands from the repository root. Apply the patch and create the skill link once.
 
 ```sh
+patch -d "$HOME/.claude/skills/meeting" -p1 < meeting/wispr-skill.patch
+ln -s "$PWD/meeting/skill" "$HOME/.claude/skills/clicky-meeting"
 ./meeting/build.sh
-mkdir -p ~/.claude/skills
-ln -s "$PWD/meeting/skill" ~/.claude/skills/clicky-meeting
 open "$HOME/Applications/Clicky Meeting.app"
 ```
 
-Create the skill link once. Rebuilding the app also refreshes its bundled helper. If the checkout moves, update the link.
+The patch targets the Wispr skill with `scripts/meeting.py`. It adds a local pairing request to the existing transcript watcher and uses Wispr’s end marker for finished calls. Rebuilding the app also refreshes its bundled helpers. If the checkout moves, update the skill link. Leave Clicky running to receive invitations.
 
-1. Start Wispr Notetaker. Run `/meeting` in your Claude Code terminal as usual.
-2. Run `/clicky-meeting` in **that same conversation**. Once the listener is running, click the character. When several conversations are paired, select one under **Sessions**.
-3. Ask something in the terminal. Follow up in the character. Replies from either place appear in both. Claude can refresh the meeting transcript before answering.
-4. Use `/meeting stop` to disconnect from that meeting. The character stays available. The menu-bar icon can reopen the panel or quit the app.
+## Existing terminal conversations
 
-The companion reads the recent end of the selected session's local Claude JSONL log for display (up to 40 visible messages from its last 2 MiB). Claude itself answers using its ongoing session context. Tool output and hidden reasoning are excluded from the panel. Questions travel over a user-private local socket to a Monitor in the live conversation. The paired session continues to use its normal Claude permissions, processing and history. A changed meeting selection closes its pairing.
+To use a particular terminal chat, run `/meeting` there and choose **Open** in Clicky. For a listener that was already running when you installed the patch, run `/clicky-meeting` once in that conversation. This is also the manual recovery if a question listener times out. Use `/meeting stop` to disconnect that conversation from the recording.
 
-Pairing is manual in this build. If Claude reports that the question monitor timed out without renewing, run `/clicky-meeting` again in the same conversation. The original voice companion and its Xcode project remain available separately.
+Clicky checks the local Wispr database and recording directory metadata every three seconds. Opening a meeting lets your Claude skill load its transcript. Questions travel over a private local socket to a Monitor in the selected conversation. The panel displays up to 40 visible messages from the last 2 MiB of that session’s Claude log. The Claude session’s normal context and retention settings apply.
 
 ## Tests
 
 ```sh
 python3 -B -m unittest discover -s meeting/tests
+./meeting/build.sh --test-resize
 ```
 
-The transport tests use temporary directories and synthetic Claude logs. They cover session isolation, recovering questions from history, duplicate listeners and disconnection.
+The Python tests use synthetic Wispr recordings, cursor files and Claude logs. The AppKit test exercises the corner grip, minimum size and saved dimensions in an isolated panel.

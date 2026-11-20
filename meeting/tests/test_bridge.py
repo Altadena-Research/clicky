@@ -28,6 +28,7 @@ class MeetingBridgeTests(unittest.TestCase):
         self.generation = "first"
         self.select_meeting()
         self.env = dict(os.environ, WISPR_MEETING_STATE_DIR=str(self.state),
+                        WISPR_DATA_DIR=str(self.folder / "wispr"), CLICKY_STATE_DIR=str(self.folder / "clicky"),
                         CLICKY_RUNTIME_DIR=str(self.ipc), CLAUDE_CONFIG_DIR=str(self.config))
 
     def select_meeting(self, stopped=False):

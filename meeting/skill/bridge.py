@@ -14,6 +14,8 @@ import stat
 import sys
 import uuid
 
+from recordings import Invitations
+
 ROOT = Path(os.environ.get("CLICKY_RUNTIME_DIR", f"/tmp/clicky-meeting-{os.getuid()}"))
 PROJECTS = Path(os.environ.get("CLAUDE_CONFIG_DIR", str(Path.home() / ".claude"))) / "projects"
 STATE = Path(os.environ.get("WISPR_MEETING_STATE_DIR", str(Path.home() / ".local/state/wispr-meeting")))
@@ -55,7 +57,14 @@ def read_line(connection):
 
 
 def sockets():
-    return sorted(path.stem for path in runtime().glob("*.sock") if has_listener(path.stem))
+    paired = []
+    for path in runtime().glob("*.sock"):
+        if has_listener(path.stem):
+            registration = session_info(path.stem)
+            if registration and ("meeting_id" not in registration or
+                                 meeting_key(path.stem) == (registration["meeting_id"], registration["generation"])):
+                paired.append(path.stem)
+    return sorted(paired)
 
 
 def has_listener(session):
@@ -86,7 +95,8 @@ def watch(session):
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
             os.chdir(folder)  # Darwin limits socket addresses to 103 bytes, including the path.
             server.bind(address.name)
-            info = {"project": project_name, "projects": str(PROJECTS.resolve())}
+            info = {"project": project_name, "projects": str(PROJECTS.resolve()),
+                    "meeting_id": selected[0], "generation": selected[1]}
             metadata.write_text(json.dumps(info))
             server.listen(4)
             server.settimeout(1)
@@ -203,6 +213,7 @@ def recent_messages(path, session):
 def ui():
     # A single helper process sleeps between file checks. Only the explicitly
     # selected Claude transcript is opened. Question text travels over a pipe.
+    invitations = Invitations()
     selected = None
     log = None
     fingerprint = None
@@ -213,6 +224,11 @@ def ui():
         selector.register(sys.stdin, selectors.EVENT_READ)
         while True:
             available = sockets()
+            invitation = invitations.view(available)
+            if invitations.next_selection:
+                selected, log, fingerprint, messages = invitations.next_selection, None, None, []
+                invitations.next_selection = None
+                emit({"type": "opened", "session": selected})
             if selected in available and log is None:
                 log = transcript_path(selected)
             if selected not in available:
@@ -232,7 +248,8 @@ def ui():
             combined = sorted(by_id.values(), key=lambda item: item["time"])
             labels = {session: session_info(session).get("project", "") for session in available}
             state = {"type": "view", "sessions": available, "labels": labels, "selected": selected,
-                     "connected": selected in available, "messages": combined[-40:]}
+                     "connected": selected in available, "messages": combined[-40:], "invitation": invitation,
+                     "project": invitations.project, "detectionError": invitations.problem}
             if state != previous:
                 emit(state)
                 previous = state
@@ -243,6 +260,12 @@ def ui():
                 return
             try:
                 request = json.loads(line)
+                if request["op"] == "project":
+                    invitations.set_project(request["path"])
+                    continue
+                if request["op"] in ("open", "dismiss"):
+                    invitations.respond(request["op"], request["meeting"], request.get("session"), sockets())
+                    continue
                 requested = session_id(request["session"])
                 if request["op"] == "select":
                     if requested not in sockets():

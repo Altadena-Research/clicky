@@ -50,16 +50,20 @@ Worker vars: `ELEVENLABS_VOICE_ID`
 
 ## Key Files
 
-The optional meeting build shares the original cursor shape with the voice app. It pairs with an existing Claude conversation through the separate `/clicky-meeting` skill. Its local helper uses a private Unix socket to forward questions and reads only the paired conversation's JSONL for display.
+The optional meeting build shares the original cursor shape with the voice app. A local Wispr Notetaker recording prompts the user to open its exact Claude conversation. Accepting starts or reuses the normal `/meeting` workflow and pairs it through the separate `/clicky-meeting` skill. Its local helper uses a private Unix socket to forward questions and reads only the paired conversation's JSONL for display.
 
 | Meeting source | Approximate lines | Purpose |
 |---|---:|---|
 | `leanring-buddy/Triangle.swift` | 20 | Shared Clicky cursor shape |
-| `meeting/MeetingApp.swift` | 392 | Floating character, formatted conversation and session selection |
-| `meeting/skill/bridge.py` | 279 | Local transport, pinned listener and transcript filtering |
+| `meeting/MeetingApp.swift` | 530 | Floating character, formatted conversation and session selection |
+| `meeting/PanelResize.swift` | 65 | Native corner grip and saved conversation size |
+| `meeting/skill/recordings.py` | 235 | Detect local recordings, track invitations and open the matching Claude session |
+| `meeting/wispr-skill.patch` | 65 | Add a pairing request event and end-marker handling to the existing personal Wispr skill |
+| `meeting/skill/bridge.py` | 305 | Local transport, pinned listener and transcript filtering |
 | `meeting/skill/SKILL.md` | 15 | Attach the question monitor inside the running session |
 | `meeting/build.sh`, `meeting/Info.plist` | 50 | Build and bundle the meeting-only app using Command Line Tools |
-| `meeting/tests/test_bridge.py` | 120 | Synthetic transport regression tests |
+| `meeting/tests/test_bridge.py`, `test_recordings.py` | 240 | Synthetic transport and invitation regression tests |
+| `meeting/tests/test_resize.swift` | 41 | Isolated AppKit resize regression test |
 
 | File | Lines | Purpose |
 |------|-------|---------|

@@ -3,7 +3,6 @@
 set -eo pipefail
 cd "$(dirname "$0")/.."
 destination="${1:-$HOME/Applications/Clicky Meeting.app}"
-mkdir -p "$destination/Contents/MacOS" "$destination/Contents/Resources"
 builddir="$(mktemp -d)"
 trap 'rm -r "$builddir"' EXIT
 # Some upgraded Command Line Tools leave the old SwiftBridging module map
@@ -23,10 +22,16 @@ work = pathlib.Path(sys.argv[2])
 PYMAP
     compiler_options=(-vfsoverlay "$builddir/modules.json" -Xcc -ivfsoverlay -Xcc "$builddir/modules.json")
 fi
+if [[ "${1:-}" == "--test-resize" ]]; then
+    swiftc "${compiler_options[@]}" -parse-as-library meeting/PanelResize.swift meeting/tests/test_resize.swift -o "$builddir/test-resize"
+    "$builddir/test-resize"
+    exit
+fi
+mkdir -p "$destination/Contents/MacOS" "$destination/Contents/Resources"
 swiftc "${compiler_options[@]}" -parse-as-library -target "$(uname -m)-apple-macosx14.2" -O \
-    leanring-buddy/Triangle.swift meeting/MeetingApp.swift -o "$builddir/ClickyMeeting"
+    leanring-buddy/Triangle.swift meeting/MeetingApp.swift meeting/PanelResize.swift -o "$builddir/ClickyMeeting"
 install -m 755 "$builddir/ClickyMeeting" "$destination/Contents/MacOS/ClickyMeeting"
 install -m 644 meeting/Info.plist "$destination/Contents/Info.plist"
-install -m 644 meeting/skill/bridge.py "$destination/Contents/Resources/bridge.py"
+install -m 644 meeting/skill/{bridge,recordings}.py "$destination/Contents/Resources/"
 codesign --force --sign - "$destination"
 printf 'Built %s\n' "$destination"
