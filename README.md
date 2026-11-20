@@ -1,3 +1,7 @@
+## Clicky Meeting test build
+
+[Build and try the floating companion for an existing Claude Code meeting session](meeting/README.md).
+
 ## Get HeyClicky for Mac and Windows
 
 The official app is **[HeyClicky](https://www.heyclicky.com/)**, an AI buddy for Mac and Windows, made by me and the team.

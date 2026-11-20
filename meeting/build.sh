@@ -1,0 +1,32 @@
+#!/bin/bash
+# Build the meeting-only companion with the macOS Command Line Tools.
+set -eo pipefail
+cd "$(dirname "$0")/.."
+destination="${1:-$HOME/Applications/Clicky Meeting.app}"
+mkdir -p "$destination/Contents/MacOS" "$destination/Contents/Resources"
+builddir="$(mktemp -d)"
+trap 'rm -r "$builddir"' EXIT
+# Some upgraded Command Line Tools leave the old SwiftBridging module map
+# beside its identical replacement. Hide the duplicate for this build only.
+swift_include="$(xcode-select -p)/usr/include/swift"
+compiler_options=()
+if [[ -f "$swift_include/bridging.modulemap" && -f "$swift_include/module.modulemap" ]] &&
+   diff -q <(sed -n '/^module /,$p' "$swift_include/module.modulemap") \
+           <(sed -n '/^module /,$p' "$swift_include/bridging.modulemap") >/dev/null; then
+    touch "$builddir/empty.modulemap"
+    /usr/bin/python3 - "$swift_include/module.modulemap" "$builddir" <<'PYMAP'
+import json, pathlib, sys
+work = pathlib.Path(sys.argv[2])
+(work / "modules.json").write_text(json.dumps({
+    "version": 0, "roots": [{"type": "file", "name": sys.argv[1],
+                             "external-contents": str(work / "empty.modulemap")}]}))
+PYMAP
+    compiler_options=(-vfsoverlay "$builddir/modules.json" -Xcc -ivfsoverlay -Xcc "$builddir/modules.json")
+fi
+swiftc "${compiler_options[@]}" -parse-as-library -target "$(uname -m)-apple-macosx14.2" -O \
+    leanring-buddy/Triangle.swift meeting/MeetingApp.swift -o "$builddir/ClickyMeeting"
+install -m 755 "$builddir/ClickyMeeting" "$destination/Contents/MacOS/ClickyMeeting"
+install -m 644 meeting/Info.plist "$destination/Contents/Info.plist"
+install -m 644 meeting/skill/bridge.py "$destination/Contents/Resources/bridge.py"
+codesign --force --sign - "$destination"
+printf 'Built %s\n' "$destination"

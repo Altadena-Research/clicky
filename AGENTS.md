@@ -50,6 +50,17 @@ Worker vars: `ELEVENLABS_VOICE_ID`
 
 ## Key Files
 
+The optional meeting build shares the original cursor shape with the voice app. It pairs with an existing Claude conversation through the separate `/clicky-meeting` skill. Its local helper uses a private Unix socket to forward questions and reads only the paired conversation's JSONL for display.
+
+| Meeting source | Approximate lines | Purpose |
+|---|---:|---|
+| `leanring-buddy/Triangle.swift` | 20 | Shared Clicky cursor shape |
+| `meeting/MeetingApp.swift` | 392 | Floating character, formatted conversation and session selection |
+| `meeting/skill/bridge.py` | 279 | Local transport, pinned listener and transcript filtering |
+| `meeting/skill/SKILL.md` | 15 | Attach the question monitor inside the running session |
+| `meeting/build.sh`, `meeting/Info.plist` | 50 | Build and bundle the meeting-only app using Command Line Tools |
+| `meeting/tests/test_bridge.py` | 120 | Synthetic transport regression tests |
+
 | File | Lines | Purpose |
 |------|-------|---------|
 | `leanring_buddyApp.swift` | ~89 | Menu bar app entry point. Uses `@NSApplicationDelegateAdaptor` with `CompanionAppDelegate` which creates `MenuBarPanelManager` and starts `CompanionManager`. No main window — the app lives entirely in the status bar. |
@@ -77,6 +88,8 @@ Worker vars: `ELEVENLABS_VOICE_ID`
 | `worker/src/index.ts` | ~142 | Cloudflare Worker proxy. Three routes: `/chat` (Claude), `/tts` (ElevenLabs), `/transcribe-token` (AssemblyAI temp token). |
 
 ## Build & Run
+
+For the meeting-only build, run `./meeting/build.sh` and follow [the pairing and testing instructions](meeting/README.md).
 
 ```bash
 # Open in Xcode
