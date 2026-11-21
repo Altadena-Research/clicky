@@ -31,6 +31,31 @@ struct ComposerTests {
         precondition(press("v", .control) && store.images.count == 1)
         precondition(press("v", .command) && store.images.count == 2)
         precondition(store.hasDraft && store.canSend)
+        let project = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: project) }
+        let base = project.appendingPathComponent(".clicky-attachments")
+        let session = store.selected!
+        let folder = base.appendingPathComponent(session)
+        let image = store.images[0]
+        let file = folder.appendingPathComponent(image.id + ".png")
+        try image.save(for: session, in: folder.path)
+        try image.save(for: session, in: folder.path)
+        let saved = try Data(contentsOf: file)
+        let ignore = try String(contentsOf: base.appendingPathComponent(".gitignore"), encoding: .utf8)
+        precondition(saved == image.png && ignore == "*\n")
+        for (url, expected) in [(folder, 0o700), (base, 0o700), (file, 0o600)] {
+            let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+            precondition((attributes[.posixPermissions] as? NSNumber)?.intValue == expected)
+        }
+        let otherSession = UUID().uuidString.lowercased()
+        let redirected = base.appendingPathComponent(otherSession)
+        try FileManager.default.createSymbolicLink(at: redirected, withDestinationURL: project)
+        do {
+            try image.save(for: otherSession, in: redirected.path)
+            fatalError("Attachment followed a redirected session folder")
+        } catch ChatImage.ImageError.folder { }
+        print("Passed project attachment storage, private permissions, Git exclusion and redirected-folder rejection.")
         board.clearContents()
         board.setString("paste\ntext", forType: .string)
         precondition(press("v", .control) && store.draft == "paste\ntext")

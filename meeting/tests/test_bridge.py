@@ -37,7 +37,7 @@ class MeetingBridgeTests(unittest.TestCase):
 
     def process(self, *args):
         proc = subprocess.Popen([sys.executable, "-B", "-u", str(BRIDGE), *args],
-                                env=self.env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                                env=self.env, cwd=self.folder, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         def finish():
             if proc.poll() is None:
                 proc.terminate()
@@ -110,12 +110,21 @@ class MeetingBridgeTests(unittest.TestCase):
 
     def test_image_only_message_reaches_existing_listener_and_keeps_preview(self):
         listener = self.listen()
+        # An already-running listener predates the cwd field. Recover the exact project from its live session.
+        metadata = self.ipc / (self.session + ".meta")
+        registration = json.loads(metadata.read_text())
+        del registration["cwd"]
+        metadata.write_text(json.dumps(registration))
+        registry = self.config / "sessions"
+        registry.mkdir()
+        (registry / (str(os.getpid()) + ".json")).write_text(json.dumps({
+            "pid": os.getpid(), "sessionId": self.session, "cwd": str(self.folder)}))
         ui = self.process("ui")
         self.read(ui)
         self.command(ui, op="select", session=self.session)
-        self.read(ui)
+        folder = Path(self.read(ui)["attachmentFolder"])
+        self.assertEqual(folder, self.folder.resolve() / ".clicky-attachments" / self.session)
         image = str(uuid.uuid4())
-        folder = Path(self.env["CLICKY_STATE_DIR"]) / "attachments" / self.session
         folder.mkdir(parents=True)
         path = folder / (image + ".png")
         path.write_bytes(b"fixture")
@@ -128,6 +137,23 @@ class MeetingBridgeTests(unittest.TestCase):
         self.assertIn(str(path), self.read(listener)["question"])
         self.command(ui, op="ask", session=self.session, question="", images=[str(uuid.uuid4())])
         self.assertEqual(self.read(ui)["type"], "error")
+        legacy_id = str(uuid.uuid4())
+        legacy = Path(self.env["CLICKY_STATE_DIR"]).resolve() / "attachments" / self.session / (legacy_id + ".png")
+        legacy.parent.mkdir(parents=True)
+        legacy.write_bytes(b"old fixture")
+        self.command(ui, op="ask", session=self.session, question="", images=[legacy_id])
+        self.assertEqual(self.read(ui)["type"], "error")
+        (folder / (legacy_id + ".png")).symlink_to(legacy)
+        self.command(ui, op="ask", session=self.session, question="", images=[legacy_id])
+        self.assertEqual(self.read(ui)["type"], "error")
+        note = "\n\n[Images attached in Clicky]\nPlease use the Read tool to view these local image files before answering:\n"
+        old_event = json.dumps({"event": "clicky_question", "question": "Earlier" + note + str(legacy)})
+        old_row = {"type": "user", "uuid": "old", "timestamp": "2020", "sessionId": self.session,
+                   "origin": {"kind": "task-notification"}, "message": {"content":
+                   '<summary>Monitor event: "Questions typed in Clicky Meeting"</summary><event>' + old_event}}
+        (self.project / (self.session + ".jsonl")).write_text(json.dumps(old_row) + "\n")
+        earlier = next(msg for msg in self.read(ui)["messages"] if msg["id"] == "old")
+        self.assertEqual((earlier["text"], earlier["images"]), ("Earlier", [str(legacy)]))
         self.command(ui, op="stop", session=self.other)
         self.assertEqual(self.read(ui)["type"], "error")
 

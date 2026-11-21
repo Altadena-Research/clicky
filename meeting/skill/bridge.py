@@ -86,7 +86,7 @@ def watch(session):
     if selected is None:
         raise ValueError("Start /meeting in this Claude conversation first.")
     folder = runtime()
-    project_name = Path.cwd().name
+    project = Path.cwd()
     address = folder / (session + ".sock")
     metadata = folder / (session + ".meta")
     with (folder / (session + ".lock")).open("a") as lock:
@@ -98,7 +98,7 @@ def watch(session):
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
             os.chdir(folder)  # Darwin limits socket addresses to 103 bytes, including the path.
             server.bind(address.name)
-            info = {"project": project_name, "projects": str(PROJECTS.resolve()),
+            info = {"project": project.name, "cwd": str(project), "projects": str(PROJECTS.resolve()),
                     "meeting_id": selected[0], "generation": selected[1]}
             metadata.write_text(json.dumps(info))
             server.listen(4)
@@ -157,34 +157,48 @@ def transcript_path(session):
 IMAGE_NOTE = "\n\n[Images attached in Clicky]\nPlease use the Read tool to view these local image files before answering:\n"
 
 
-def image_paths(session, identifiers):
+def attachment_folder(session, entry):
+    # Keep the same project when a listener renews from a subdirectory or predates cwd registration.
+    cwd = entry.get("cwd") or session_info(session).get("cwd")
+    if cwd and Path(cwd).is_absolute() and Path(cwd).is_dir():
+        return Path(cwd).resolve() / ".clicky-attachments" / session_id(session)
+    return None
+
+
+def image_paths(folder, identifiers):
     if not isinstance(identifiers, list) or len(identifiers) > 4:
         raise ValueError("Attach up to four images per message.")
-    folder = PREFERENCES / "attachments" / session
+    if identifiers and folder is None:
+        raise ValueError("Couldn’t locate the paired project for these images. Run /clicky-meeting in the meeting terminal.")
     paths = []
     for identifier in identifiers:
         path = folder / (session_id(identifier) + ".png")
-        if path.resolve() != folder.resolve() / path.name or not path.is_file():
+        if path.resolve() != path or not path.is_file():
             raise ValueError("An attached image is missing. Attach it again.")
         paths.append(str(path))
     return paths
 
 
-def chat_message(identifier, question, session, timestamp):
+def chat_message(identifier, question, session, timestamp, folder):
     plain, marker, files = question.rpartition(IMAGE_NOTE)
     images = []
     if marker:
         paths = files.splitlines()
-        try:
-            if paths == image_paths(session, [Path(path).stem for path in paths]):
-                images = paths
-                question = plain
-        except (ValueError, OSError):
-            pass
+        legacy = (PREFERENCES / "attachments").resolve() / session_id(session)
+        for candidate in (folder, legacy):
+            if candidate is None or not paths or any(Path(path).parent != candidate for path in paths):
+                continue
+            try:
+                if paths == image_paths(candidate, [Path(path).stem for path in paths]):
+                    images = paths
+                    question = plain
+            except (ValueError, OSError):
+                pass
+            break
     return {"id": identifier, "role": "user", "text": question, "images": images, "time": timestamp}
 
 
-def visible_message(row):
+def visible_message(row, folder):
     role = row.get("type")
     if role not in ("user", "assistant") or row.get("isMeta") or row.get("isSidechain"):
         return None
@@ -200,7 +214,7 @@ def visible_message(row):
                 return None
             content = event["question"]
             identifier = event.get("id") or identifier
-            return chat_message(identifier, content, row.get("sessionId", ""), row.get("timestamp", ""))
+            return chat_message(identifier, content, row.get("sessionId", ""), row.get("timestamp", ""), folder)
         except (ValueError, KeyError, AttributeError):
             return None
     elif role == "user" and isinstance(content, list):
@@ -218,7 +232,7 @@ def visible_message(row):
             "text": content.strip(), "time": row.get("timestamp", "")}
 
 
-def recent_messages(path, session):
+def recent_messages(path, session, folder):
     messages = []
     if path is None:
         return messages
@@ -236,7 +250,7 @@ def recent_messages(path, session):
                 row = json.loads(line)
                 if row.get("sessionId") != session:
                     continue
-                message = visible_message(row)
+                message = visible_message(row, folder)
                 if message and message["id"]:
                     messages.append(message)
             except (ValueError, TypeError, AttributeError, KeyError):
@@ -271,17 +285,18 @@ def ui():
                 log = transcript_path(selected)
             if selected not in available:
                 log, fingerprint = None, None
+            entry = registry.entry(selected) if selected in available else {}
+            folder = attachment_folder(selected, entry) if selected in available else None
             if log:
                 try:
                     info = log.stat()
-                    stamp = (info.st_ino, info.st_size, info.st_mtime_ns)
+                    stamp = (info.st_ino, info.st_size, info.st_mtime_ns, folder)
                     if fingerprint != stamp:
-                        messages = recent_messages(log, selected)
+                        messages = recent_messages(log, selected, folder)
                         fingerprint = stamp
                 except FileNotFoundError:
                     log = None
                     fingerprint = None
-            entry = registry.entry(selected) if selected in available else {}
             activity = phase(entry)
             flight = flights.get(selected)
             if flight and selected in available:
@@ -330,7 +345,8 @@ def ui():
                     resume_status = "Following resumed recording" if speech else "Wispr resumed · waiting for new speech"
             state = {"type": "view", "activity": activity, "resumeStatus": resume_status, "sessions": available, "labels": labels, "selected": selected,
                      "connected": selected in available, "messages": combined[-40:], "invitation": invitation,
-                     "project": invitations.project, "detectionError": invitations.problem}
+                     "project": invitations.project, "attachmentFolder": str(folder) if folder else None,
+                     "detectionError": invitations.problem}
             if state != previous:
                 emit(state)
                 previous = state
@@ -374,7 +390,7 @@ def ui():
                     if requested != selected or requested not in sockets():
                         raise ValueError("The selected conversation disconnected.")
                     question = request["question"].strip()
-                    files = image_paths(selected, request.get("images", []))
+                    files = image_paths(folder, request.get("images", []))
                     if files:
                         question = (question or "Describe the attached image.") + IMAGE_NOTE + "\n".join(files)
                     if len(question) > MAX_QUESTION:
@@ -385,7 +401,7 @@ def ui():
                         raise ValueError(result.get("error", "Delivery failed."))
                     if result.get("id"):
                         history = questions.setdefault(selected, [])
-                        history.append(chat_message(result["id"], question, selected, timestamp))
+                        history.append(chat_message(result["id"], question, selected, timestamp, folder))
                         flights[selected] = {"id": result["id"], "since": time.monotonic()}
                         del history[:-40]
                     emit({"type": "sent", "session": selected})

@@ -49,24 +49,43 @@ struct ChatImage: Identifiable {
         return []
     }
 
-    func save(for session: String) throws {
-        guard UUID(uuidString: session) != nil else { throw ImageError.session }
-        let base = ProcessInfo.processInfo.environment["CLICKY_STATE_DIR"].map { URL(fileURLWithPath: $0) }
-            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/state/clicky-meeting")
-        let folder = base.appendingPathComponent("attachments").appendingPathComponent(session)
-        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true,
-                                                attributes: [.posixPermissions: 0o700])
+    private static func privateDirectory(_ url: URL) throws {
+        if mkdir(url.path, 0o700) != 0 && errno != EEXIST { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        var info = stat()
+        guard lstat(url.path, &info) == 0, info.st_mode & S_IFMT == S_IFDIR,
+              info.st_uid == getuid(), info.st_mode & 0o077 == 0 else { throw ImageError.folder }
+    }
+
+    func save(for session: String, in path: String?) throws {
+        guard let path, path.hasPrefix("/"), UUID(uuidString: session) != nil else { throw ImageError.session }
+        let folder = URL(fileURLWithPath: path, isDirectory: true)
+        let base = folder.deletingLastPathComponent()
+        guard folder.lastPathComponent == session, base.lastPathComponent == ".clicky-attachments" else {
+            throw ImageError.session
+        }
+        try Self.privateDirectory(base)
+        let ignore = base.appendingPathComponent(".gitignore")
+        let rules = Data("*\n".utf8)
+        do {
+            try rules.write(to: ignore, options: .withoutOverwriting)
+        } catch let error as CocoaError where error.code == .fileWriteFileExists {
+            var info = stat()
+            guard lstat(ignore.path, &info) == 0, info.st_mode & S_IFMT == S_IFREG,
+                  info.st_size == rules.count, try Data(contentsOf: ignore) == rules else { throw ImageError.folder }
+        }
+        try Self.privateDirectory(folder)
         let url = folder.appendingPathComponent(id + ".png")
         try png.write(to: url, options: [.atomic])
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
     }
 
     enum ImageError: LocalizedError {
-        case unreadable, session
+        case unreadable, session, folder
         var errorDescription: String? {
             switch self {
             case .unreadable: return "Couldn’t read that image. Try a PNG or JPEG."
-            case .session: return "Choose a paired conversation before attaching images."
+            case .session: return "Couldn’t locate the paired project. Run /clicky-meeting in the meeting terminal."
+            case .folder: return "Couldn’t create a private, Git-ignored attachment folder in the paired project."
             }
         }
     }

@@ -28,6 +28,7 @@ private struct BridgeEvent: Decodable {
     let messages: [ChatLine]?
     let invitation: Invitation?
     let project: String?
+    let attachmentFolder: String?
     let resumeStatus: String?
     let detectionError: String?
     let message: String?
@@ -45,6 +46,7 @@ final class MeetingStore: ObservableObject {
     @Published var activity = "unknown"
     @Published var queued = false
     private var submittedImages: [String] = []
+    private var attachmentFolder: String?
     private var drafts: [String: (String, [ChatImage])] = [:]
     var busy: Bool { activity == "working" || activity == "attention" }
     var hasDraft: Bool { !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !images.isEmpty }
@@ -192,7 +194,7 @@ final class MeetingStore: ObservableObject {
         guard question.count <= 4000 else { error = "Keep the question under 4,001 characters."; return }
         if busy { queued = true; return }
         do {
-            for image in images { try image.save(for: selected) }
+            for image in images { try image.save(for: selected, in: attachmentFolder) }
         } catch { self.error = error.localizedDescription; return }
         sending = true
         submitted = draft
@@ -252,6 +254,7 @@ final class MeetingStore: ObservableObject {
                     queued = false
                 }
                 selected = event.selected
+                attachmentFolder = event.attachmentFolder
                 connected = event.connected == true
                 activity = event.activity ?? "unknown"
                 if !connected { queued = false }
