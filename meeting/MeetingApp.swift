@@ -2,13 +2,6 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
-struct ChatLine: Decodable, Identifiable {
-    let id: String
-    let role: String
-    let images: [String]?
-    let text: String
-}
-
 struct Invitation: Decodable, Equatable {
     let id: String
     let title: String
@@ -346,45 +339,16 @@ struct MeetingView: View {
                 Label(status, systemImage: "waveform").font(.caption).foregroundStyle(.secondary)
             }
             Divider()
-            ScrollViewReader { reader in
-                GeometryReader { viewport in
-                    ScrollView {
-                        if store.messages.isEmpty {
-                            VStack(alignment: .leading, spacing: 8) {
-                                Text(store.connected ? "Ready for your question" : "Connect your meeting").font(.headline)
-                                Text(store.connected ? "Replies from this Claude conversation appear here." :
-                                    store.detectionError ?? "Start a Wispr Notetaker recording. Clicky will offer to open its Claude conversation.")
-                                    .foregroundStyle(.secondary).textSelection(.enabled)
-                            }.frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 12)
-                        } else {
-                            LazyVStack(alignment: .leading, spacing: 16) {
-                                ForEach(store.messages) { message in
-                                    VStack(alignment: .leading, spacing: 4) {
-                                        Text(message.role == "assistant" ? "Claude" : "You")
-                                            .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                                        if let paths = message.images {
-                                            HStack {
-                                                ForEach(paths, id: \.self) { path in
-                                                    if let image = NSImage(contentsOfFile: path) {
-                                                        Image(nsImage: image).resizable().scaledToFit().frame(maxWidth: 90, maxHeight: 65)
-                                                            .accessibilityLabel("Attached image")
-                                                    }
-                                                }
-                                            }
-                                        }
-                                        ReplyText(source: message.text, availableWidth: viewport.size.width)
-                                    }.frame(maxWidth: .infinity, alignment: .leading).id(message.id)
-                                }
-                            }
-                        }
-                        Color.clear.frame(height: 1).id("bottom")
-                    }.onChange(of: store.messages.last?.id) { _, _ in
-                        if let reply = NSApp.keyWindow?.firstResponder as? ReplySelectionView,
-                           reply.selectedRange().length > 0 { return }
-                        reader.scrollTo("bottom")
-                    }
-                    .onAppear { reader.scrollTo("bottom") }
-                }
+            if store.messages.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(store.connected ? "Ready for your question" : "Connect your meeting").font(.headline)
+                    Text(store.connected ? "Replies from this Claude conversation appear here." :
+                        store.detectionError ?? "Start a Wispr Notetaker recording. Clicky will offer to open its Claude conversation.")
+                        .foregroundStyle(.secondary).textSelection(.enabled)
+                }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading).padding(.vertical, 12)
+            } else {
+                ConversationTranscript(messages: store.messages).id(store.selected)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             if let error = store.error, store.invitation == nil { Text(error).foregroundStyle(.red).font(.caption) }
             Divider()

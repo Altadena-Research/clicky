@@ -1,4 +1,12 @@
 import SwiftUI
+import ImageIO
+
+struct ChatLine: Decodable, Identifiable, Equatable {
+    let id: String
+    let role: String
+    let images: [String]?
+    let text: String
+}
 
 enum ReplyBlock: Equatable {
     case body(String), heading(String), code(String)
@@ -100,109 +108,226 @@ struct ReplyTable: Equatable {
     }
 }
 
-struct ReplyText: View {
-    let source: String
-    let availableWidth: CGFloat
+struct ConversationTranscript: NSViewRepresentable {
+    let messages: [ChatLine]
 
-    private struct Section {
-        var blocks: [ReplyBlock]
-        var scrollWidth: CGFloat?
+    func makeNSView(context: Context) -> TranscriptScrollView {
+        TranscriptScrollView(frame: .zero)
     }
 
-    private var selectionSections: [Section] {
-        // Keep the whole reply in one selection range except where a table needs its own scroller.
-        var sections: [Section] = []
-        var contiguous: [ReplyBlock] = []
-        for block in ReplyBlock.parse(source) {
-            if case let .table(table) = block, table.minimumWidth > availableWidth {
-                if !contiguous.isEmpty {
-                    sections.append(Section(blocks: contiguous))
-                    contiguous = []
-                }
-                sections.append(Section(blocks: [block], scrollWidth: table.minimumWidth))
-            } else {
-                contiguous.append(block)
-            }
-        }
-        if !contiguous.isEmpty { sections.append(Section(blocks: contiguous)) }
-        return sections
-    }
-
-    var body: some View {
-        let sections = selectionSections
-        VStack(alignment: .leading, spacing: 3) {
-            ForEach(sections.indices, id: \.self) { index in
-                let section = sections[index]
-                if let width = section.scrollWidth {
-                    ScrollView(.horizontal) {
-                        SelectableReply(blocks: section.blocks).frame(width: width)
-                    }.fixedSize(horizontal: false, vertical: true)
-                } else {
-                    SelectableReply(blocks: section.blocks)
-                }
-            }
-        }
+    func updateNSView(_ view: TranscriptScrollView, context: Context) {
+        view.display(messages)
     }
 }
 
-private struct SelectableReply: NSViewRepresentable {
-    let blocks: [ReplyBlock]
+final class TranscriptScrollView: NSScrollView {
+    private let transcript = ReplySelectionView(usingTextLayoutManager: false)
+    private var messages: [ChatLine] = []
+    private var rendered: [RenderedMessage] = []
+    private var needsTextUpdate = false
+    private var wrapWidth: CGFloat?
+    private var minimumTableWidth: CGFloat = 0
+    private var fittingDocument = false
+    private var followLatest = true
 
-    func makeNSView(context: Context) -> ReplySelectionView {
-        // TextKit 1 lays out NSTextTable cells in the same selectable document as the surrounding text.
-        let view = ReplySelectionView(usingTextLayoutManager: false)
-        view.isEditable = false
-        view.isSelectable = true
-        view.drawsBackground = false
-        view.textContainerInset = .zero
-        view.textContainer?.lineFragmentPadding = 0
-        view.textContainer?.widthTracksTextView = true
-        view.isVerticallyResizable = false
-        return view
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        drawsBackground = false
+        hasVerticalScroller = true
+        autohidesScrollers = true
+        transcript.isEditable = false
+        transcript.isSelectable = true
+        transcript.drawsBackground = false
+        transcript.textContainerInset = .zero
+        transcript.textContainer?.lineFragmentPadding = 0
+        transcript.textContainer?.widthTracksTextView = false
+        transcript.isVerticallyResizable = false
+        transcript.isHorizontallyResizable = false
+        transcript.setAccessibilityLabel("Meeting conversation")
+        documentView = transcript
     }
 
-    func updateNSView(_ view: ReplySelectionView, context: Context) {
-        view.display(blocks)
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    func display(_ incoming: [ChatLine]) {
+        guard incoming != messages else { return }
+        followLatest = messages.isEmpty || documentVisibleRect.maxY >= transcript.frame.height - 2
+        messages = incoming
+        let previous = Dictionary(uniqueKeysWithValues: rendered.map { ($0.message.id, $0) })
+        rendered = incoming.map { message in
+            if let cached = previous[message.id], cached.message == message { return cached }
+            return RenderedMessage(message)
+        }
+        minimumTableWidth = rendered.map(\.minimumTableWidth).max() ?? 0
+        needsTextUpdate = true
+        fitDocument()
     }
 
-    func sizeThatFits(_ proposal: ProposedViewSize, nsView view: ReplySelectionView, context: Context) -> CGSize? {
-        guard let width = proposal.width, width.isFinite, width > 0,
-              let layout = view.layoutManager, let container = view.textContainer else { return nil }
-        let previous = container.containerSize
-        container.containerSize = CGSize(width: width, height: .greatestFiniteMagnitude)
+    override func layout() {
+        super.layout()
+        fitDocument()
+    }
+
+    fileprivate func fitDocument() {
+        let available = contentSize.width
+        guard available > 0, !fittingDocument, !transcript.trackingSelection,
+              let container = transcript.textContainer, let layout = transcript.layoutManager else { return }
+        fittingDocument = true
+        defer { fittingDocument = false }
+        let width = max(available, minimumTableWidth)
+        // Prose still wraps at the viewport edge if one of the tables requires horizontal scrolling.
+        let constrained = minimumTableWidth > available ? available : nil
+        if hasHorizontalScroller != (constrained != nil) { hasHorizontalScroller = constrained != nil }
+        if needsTextUpdate || wrapWidth != constrained {
+            transcript.display(rendered, wrapWidth: constrained)
+            wrapWidth = constrained
+            needsTextUpdate = false
+        }
+        if container.containerSize.width != width {
+            container.containerSize = NSSize(width: width, height: .greatestFiniteMagnitude)
+        }
         layout.ensureLayout(for: container)
-        let height = ceil(layout.usedRect(for: container).maxY)
-        container.containerSize = previous
-        return CGSize(width: width, height: max(1, height))
+        let size = NSSize(width: width, height: max(1, ceil(layout.usedRect(for: container).maxY)))
+        if transcript.frame.size != size { transcript.setFrameSize(size) }
+        if followLatest, transcript.selectedRange().length == 0 {
+            contentView.scroll(to: NSPoint(x: contentView.bounds.minX, y: max(0, size.height - contentSize.height)))
+            reflectScrolledClipView(contentView)
+        }
+        followLatest = false
     }
 }
 
 final class ReplySelectionView: NSTextView {
+    fileprivate private(set) var trackingSelection = false
+    private var messageRanges: [String: NSRange] = [:]
+    private var displayed: [RenderedMessage] = []
+    private var displayedWrapWidth: CGFloat?
+
     override var needsPanelToBecomeKey: Bool { true }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
     override func mouseDown(with event: NSEvent) {
-        // A read-only text view can track the drag while the composer still owns Command-C.
+        // AppKit tracks the drag synchronously. Let it finish before applying a live transcript update.
+        trackingSelection = true
         super.mouseDown(with: event)
         if selectedRange().length > 0 { window?.makeFirstResponder(self) }
+        trackingSelection = false
+        (enclosingScrollView as? TranscriptScrollView)?.fitDocument()
     }
-    private var displayed: [ReplyBlock] = []
 
-    func display(_ blocks: [ReplyBlock]) {
-        guard displayed != blocks else { return }
-        displayed = blocks
+    fileprivate func display(_ messages: [RenderedMessage], wrapWidth: CGFloat?) {
+        guard let storage = textStorage else { return }
+        let appending = !displayed.isEmpty && displayed.count < messages.count && displayedWrapWidth == wrapWidth
+            && zip(displayed, messages).allSatisfy { $0 === $1 }
+        defer {
+            displayed = messages
+            displayedWrapWidth = wrapWidth
+        }
+        if appending {
+            // Leave TextKit's original selection anchor intact, including an upward drag or Shift selection.
+            let suffix = NSMutableAttributedString()
+            let previousText = displayed[displayed.count - 1].content(wrapWidth: wrapWidth)
+            suffix.append(previousText.attributedSubstring(from: NSRange(location: previousText.length - 1, length: 1)))
+            for message in messages.dropFirst(displayed.count) {
+                let text = message.content(wrapWidth: wrapWidth)
+                messageRanges[message.message.id] = NSRange(location: storage.length + suffix.length, length: text.length)
+                suffix.append(text)
+            }
+            suffix.deleteCharacters(in: NSRange(location: suffix.length - 1, length: 1))
+            storage.append(suffix)
+            return
+        }
+        let selection = selectedRange()
+        let first = messageRanges.first { NSLocationInRange(selection.location, $0.value) }
+        let last = messageRanges.first { selection.length > 0 && NSLocationInRange(NSMaxRange(selection) - 1, $0.value) }
+        let selectedText = selection.length > 0 ? (string as NSString).substring(with: selection) : nil
         let content = NSMutableAttributedString()
+        messageRanges.removeAll(keepingCapacity: true)
+        for message in messages {
+            let text = message.content(wrapWidth: wrapWidth)
+            messageRanges[message.message.id] = NSRange(location: content.length, length: text.length)
+            content.append(text)
+        }
+        if content.length > 0 { content.deleteCharacters(in: NSRange(location: content.length - 1, length: 1)) }
+        storage.setAttributedString(content)
+        if let selectedText, let first, let last,
+           let newFirst = messageRanges[first.key], let newLast = messageRanges[last.key] {
+            let start = newFirst.location + selection.location - first.value.location
+            let end = newLast.location + NSMaxRange(selection) - last.value.location
+            if start <= end, end <= content.length {
+                let range = NSRange(location: start, length: end - start)
+                if (content.string as NSString).substring(with: range) == selectedText {
+                    setSelectedRange(range)
+                    return
+                }
+            }
+        }
+        setSelectedRange(NSRange(location: 0, length: 0))
+    }
+}
+
+private final class RenderedMessage {
+    let message: ChatLine
+    let minimumTableWidth: CGFloat
+    private let blocks: [ReplyBlock]
+    private let thumbnails: [NSTextAttachment]
+    private var lastWidth: CGFloat?
+    private var cachedText: NSAttributedString?
+
+    init(_ message: ChatLine) {
+        self.message = message
+        blocks = ReplyBlock.parse(message.text)
+        minimumTableWidth = blocks.compactMap { block -> CGFloat? in
+            if case let .table(table) = block { return table.minimumWidth }
+            return nil
+        }.max() ?? 0
+        thumbnails = (message.images ?? []).compactMap { path in
+            guard let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: path) as CFURL, nil),
+                  let bitmap = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+                    kCGImageSourceCreateThumbnailFromImageAlways: true,
+                    kCGImageSourceCreateThumbnailWithTransform: true,
+                    kCGImageSourceThumbnailMaxPixelSize: 180
+                  ] as CFDictionary) else { return nil }
+            let scale = min(1, 90 / CGFloat(bitmap.width), 65 / CGFloat(bitmap.height))
+            let image = NSImage(cgImage: bitmap, size: NSSize(width: CGFloat(bitmap.width) * scale,
+                                                              height: CGFloat(bitmap.height) * scale))
+            image.accessibilityDescription = "Attached image"
+            let attachment = NSTextAttachment()
+            attachment.attachmentCell = NSTextAttachmentCell(imageCell: image)
+            return attachment
+        }
+    }
+
+    func content(wrapWidth: CGFloat?) -> NSAttributedString {
+        if let cachedText, lastWidth == wrapWidth { return cachedText }
+        let content = NSMutableAttributedString()
+        let font = NSFont.systemFont(ofSize: NSFont.systemFontSize)
         func appendParagraph(_ text: NSAttributedString, style: NSParagraphStyle) {
             let start = content.length
             content.append(text)
-            content.append(NSAttributedString(string: "\n", attributes: [.font: NSFont.systemFont(ofSize: NSFont.systemFontSize)]))
+            content.append(NSAttributedString(string: "\n", attributes: [.font: font]))
             content.addAttribute(.paragraphStyle, value: style, range: NSRange(location: start, length: content.length - start))
         }
         let paragraph = NSMutableParagraphStyle()
         paragraph.paragraphSpacing = 3
+        paragraph.tailIndent = wrapWidth ?? 0
+        let caption = paragraph.mutableCopy() as! NSMutableParagraphStyle
+        caption.paragraphSpacingBefore = 12
+        caption.paragraphSpacing = 4
+        appendParagraph(NSAttributedString(string: message.role == "assistant" ? "Claude" : "You",
+                                           attributes: [.font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize, weight: .semibold),
+                                                        .foregroundColor: NSColor.secondaryLabelColor]), style: caption)
+        if !thumbnails.isEmpty {
+            let row = NSMutableAttributedString()
+            for thumbnail in thumbnails {
+                if row.length > 0 { row.append(NSAttributedString(string: " ")) }
+                row.append(NSAttributedString(attachment: thumbnail))
+            }
+            appendParagraph(row, style: paragraph)
+        }
         for block in blocks {
             switch block {
             case let .table(table):
-                Self.appendTable(table, appendParagraph: appendParagraph)
+                Self.appendTable(table, wrapWidth: wrapWidth, appendParagraph: appendParagraph)
             case let .code(line):
                 let font = NSFont.monospacedSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
                 appendParagraph(NSAttributedString(string: line, attributes: [.font: font, .foregroundColor: NSColor.labelColor]), style: paragraph)
@@ -210,20 +335,19 @@ final class ReplySelectionView: NSTextView {
             case let .body(line): appendParagraph(Self.inline(line), style: paragraph)
             }
         }
-        if content.length > 0 { content.deleteCharacters(in: NSRange(location: content.length - 1, length: 1)) }
-        let range = selectedRange()
-        let previous = string as NSString
-        textStorage?.setAttributedString(content)
-        if range.length > 0, NSMaxRange(range) <= previous.length, NSMaxRange(range) <= content.length,
-           previous.substring(with: range) == (content.string as NSString).substring(with: range) {
-            setSelectedRange(range)
-        }
+        cachedText = content
+        lastWidth = wrapWidth
+        return content
     }
 
-    private static func appendTable(_ table: ReplyTable, appendParagraph: (NSAttributedString, NSParagraphStyle) -> Void) {
+    private static func appendTable(_ table: ReplyTable, wrapWidth: CGFloat?, appendParagraph: (NSAttributedString, NSParagraphStyle) -> Void) {
         let layout = NSTextTable()
         layout.numberOfColumns = table.alignments.count
-        layout.setContentWidth(100, type: .percentageValueType)
+        if let wrapWidth {
+            layout.setContentWidth(max(wrapWidth, table.minimumWidth), type: .absoluteValueType)
+        } else {
+            layout.setContentWidth(100, type: .percentageValueType)
+        }
         let rows = table.rows.enumerated().map { index, row in row.map { inline($0, bold: index == 0) } }
         let widths = table.alignments.indices.map { column in
             rows.map { ceil($0[column].size().width) }.max() ?? 0

@@ -56,7 +56,7 @@ The optional meeting build uses a pixel portrait of Marcus Aurelius as its float
 |---|---:|---|
 | `meeting/Resources/Marcus.png` | — | Transparent portrait displayed in the 48-point meeting character window |
 | `meeting/MeetingApp.swift` | 695 | Floating character, conversation and session selection |
-| `meeting/ReplyText.swift` | 275 | Selectable Markdown replies and resizable native tables using TextKit |
+| `meeting/ReplyText.swift` | 400 | One selectable TextKit transcript with speaker labels, image thumbnails and resizable Markdown tables |
 | `meeting/ChatImages.swift` | 73 | Screenshot decoding, previews and session-scoped PNG copies |
 | `meeting/PanelResize.swift` | 65 | Native corner grip and saved conversation size |
 | `meeting/skill/wispr_activity.py` | 40 | Shared Wispr live capture and resume detection from local metadata |
@@ -68,7 +68,7 @@ The optional meeting build uses a pixel portrait of Marcus Aurelius as its float
 | `meeting/build.sh`, `meeting/Info.plist` | 50 | Build and bundle the meeting-only app using Command Line Tools |
 | `meeting/tests/test_bridge.py`, `test_recordings.py` | 240 | Synthetic transport and invitation regression tests |
 | `meeting/tests/test_resume.py` | 125 | Wispr resume detection, segment invitations and pinned monitoring |
-| `meeting/tests/test_composer.swift` | 89 | Native drag selection, clipboard shortcuts and cancellation of queued input |
+| `meeting/tests/test_composer.swift` | 150 | Cross-message selection, live history refresh, attachment storage and composer shortcuts |
 | `meeting/tests/test_replies.swift` | 73 | Table parsing, wrapping and horizontal scrolling in the reply view |
 | `meeting/tests/test_resize.swift` | 41 | Isolated AppKit resize regression test |
 

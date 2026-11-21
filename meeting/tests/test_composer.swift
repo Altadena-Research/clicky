@@ -67,11 +67,16 @@ struct ComposerTests {
 
         store.activity = "ready"
         let source = "## Notes\nFirst **review** today.\n```text\nAlpha section\n  Beta section\n```\nThen discuss."
-        store.messages = [ChatLine(id: "demo", role: "assistant", images: nil, text: source)]
+        let older = ChatLine(id: "older", role: "user", images: [file.path],
+                             text: "Earlier [update](https://example.test/notes).")
+        let first = ChatLine(id: "demo", role: "assistant", images: nil, text: source)
+        let second = ChatLine(id: "question", role: "user", images: nil, text: "Which group owns the review?")
+        let third = ChatLine(id: "followup", role: "assistant", images: nil, text: "The design group owns it.")
+        store.messages = [older, first, second, third]
         let host = NSHostingView(rootView: MeetingView(store: store, hide: {}))
         host.sizingOptions = []
         panel.contentView = host
-        panel.setContentSize(NSSize(width: 460, height: 550))
+        panel.setContentSize(NSSize(width: 460, height: 630))
         panel.alphaValue = 0
         panel.makeKeyAndOrderFront(nil)
         defer { panel.orderOut(nil) }
@@ -83,9 +88,12 @@ struct ComposerTests {
         guard let view = reply(in: host), let layout = view.layoutManager, let container = view.textContainer
         else { fatalError("Missing selectable text in the conversation") }
         precondition(!view.isEditable && view.isSelectable)
-        let expected = "review today.\nAlpha section\n  Beta"
-        let selected = (view.string as NSString).range(of: expected)
-        precondition(selected.location != NSNotFound)
+        let shown = view.string as NSString
+        let thumbnail = shown.range(of: "\u{fffc}")
+        let link = shown.range(of: "update")
+        precondition(thumbnail.location != NSNotFound && link.location != NSNotFound)
+        precondition(view.textStorage?.attribute(.attachment, at: thumbnail.location, effectiveRange: nil) is NSTextAttachment)
+        precondition(view.textStorage?.attribute(.link, at: link.location, effectiveRange: nil) != nil)
         func position(_ character: Int) -> NSPoint {
             layout.ensureLayout(for: container)
             let glyph = layout.glyphIndexForCharacter(at: character)
@@ -97,18 +105,47 @@ struct ComposerTests {
                                timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: panel.windowNumber,
                                context: nil, eventNumber: number, clickCount: 1, pressure: 1)!
         }
-        let start = mouse(.leftMouseDown, at: selected.location, number: 1)
-        let end = NSMaxRange(selected)
-        NSApp.postEvent(mouse(.leftMouseUp, at: end, number: 3), atStart: true)
-        NSApp.postEvent(mouse(.leftMouseDragged, at: end, number: 2), atStart: true)
-        panel.sendEvent(start)
-        precondition(panel.firstResponder === view && view.selectedRange() == selected,
-                     "Expected drag to select across prose and two code lines; got \(view.selectedRange()), responder \(String(describing: panel.firstResponder.map { type(of: $0) })), key \(panel.isKeyWindow)")
-        view.display(ReplyBlock.parse(source))
-        precondition(view.selectedRange() == selected)
+        func dragAndCopy(_ text: String, backwards: Bool = false, reverseMidDrag: Bool = false) {
+            let range = (view.string as NSString).range(of: text)
+            precondition(range.location != NSNotFound, "Missing expected rendered transcript text")
+            let start = backwards ? NSMaxRange(range) : range.location
+            let end = backwards ? range.location : NSMaxRange(range)
+            // Post in reverse order so AppKit's tracking loop consumes the drag before the mouse-up.
+            NSApp.postEvent(mouse(.leftMouseUp, at: end, number: 5), atStart: true)
+            NSApp.postEvent(mouse(.leftMouseDragged, at: end, number: 4), atStart: true)
+            if reverseMidDrag {
+                NSApp.postEvent(mouse(.leftMouseDragged, at: start - 3, number: 3), atStart: true)
+                NSApp.postEvent(mouse(.leftMouseDragged, at: end, number: 2), atStart: true)
+            }
+            panel.sendEvent(mouse(.leftMouseDown, at: start, number: 1))
+            precondition(panel.firstResponder === view && view.selectedRange() == range,
+                         "Expected drag to select \(range), got \(view.selectedRange())")
+            panel.sendEvent(keyDown("c", .command))
+            precondition(board.string(forType: .string) == text, "Copied text differs from highlight")
+        }
+        dragAndCopy("review today.\nAlpha section\n  Beta")
+        let acrossReplies = "discuss.\nYou\nWhich group owns the review?\nClaude\nThe design"
+        dragAndCopy(acrossReplies, reverseMidDrag: true)
+        dragAndCopy(acrossReplies, backwards: true)
+        let previousRange = view.selectedRange()
+        func waitForUpdate(_ marker: String) {
+            let timeout = Date().addingTimeInterval(2)
+            while !view.string.contains(marker), Date() < timeout {
+                RunLoop.main.run(until: Date().addingTimeInterval(0.01))
+                host.layoutSubtreeIfNeeded()
+            }
+            precondition(view.string.contains(marker))
+        }
+        let appended = ChatLine(id: "new", role: "assistant", images: nil, text: "A new reply.")
+        store.messages.append(appended)
+        waitForUpdate("A new reply.")
+        precondition(view.selectedRange() == previousRange)
+        store.messages = [first, second, third, appended, ChatLine(id: "last", role: "user", images: nil, text: "Last question.")]
+        waitForUpdate("Last question.")
+        precondition(view.selectedRange().location < previousRange.location)
         panel.sendEvent(keyDown("c", .command))
-        precondition(board.string(forType: .string) == expected)
+        precondition(board.string(forType: .string) == acrossReplies)
         precondition(store.activity == "ready" && store.draft == "paste\ntext")
-        print("Passed dragging a partial multiline selection and copying it with Command-C from the meeting panel.")
+        print("Passed cross-reply dragging down, up, and back across the anchor, Cmd+C, and selection during a transcript refresh.")
     }
 }
