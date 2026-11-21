@@ -50,11 +50,11 @@ Worker vars: `ELEVENLABS_VOICE_ID`
 
 ## Key Files
 
-The optional meeting build shares the original cursor shape with the voice app. A local Wispr Notetaker recording prompts the user to open its exact Claude conversation. Accepting starts or reuses the normal `/meeting` workflow and pairs it through the separate `/clicky-meeting` skill. Its local helper uses a private Unix socket to forward questions and reads only the paired conversation's JSONL for display.
+The optional meeting build uses a pixel portrait of Marcus Aurelius as its floating character. A local Wispr Notetaker recording prompts the user to open its exact Claude conversation. Accepting starts or reuses the normal `/meeting` workflow and pairs it through the separate `/clicky-meeting` skill. Its local helper uses a private Unix socket to forward questions and reads only the paired conversation's JSONL for display.
 
 | Meeting source | Approximate lines | Purpose |
 |---|---:|---|
-| `leanring-buddy/Triangle.swift` | 20 | Shared Clicky cursor shape |
+| `meeting/Resources/Marcus.png` | — | Transparent portrait displayed in the 48-point meeting character window |
 | `meeting/MeetingApp.swift` | 695 | Floating character, conversation and session selection |
 | `meeting/ReplyText.swift` | 165 | Markdown reply formatting and resizable native table layout |
 | `meeting/ChatImages.swift` | 73 | Screenshot decoding, previews and session-scoped PNG copies |

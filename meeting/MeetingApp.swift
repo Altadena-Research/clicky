@@ -493,7 +493,7 @@ class ChatPanel: NSPanel {
     override func cancelOperation(_ sender: Any?) { orderOut(nil); didCollapse?() }
 }
 
-private final class CharacterHitArea: NSView {
+private final class MeetingCharacterView: NSImageView {
     var clicked: (() -> Void)?
     var moved: (() -> Void)?
     private var start = NSPoint.zero
@@ -522,21 +522,6 @@ private final class CharacterHitArea: NSView {
     override func mouseUp(with event: NSEvent) { if !dragging { clicked?() } }
 }
 
-private struct CharacterView: View {
-    var body: some View {
-        ZStack {
-            Circle().fill(.regularMaterial)
-            Triangle().fill(Color(red: 0.19, green: 0.58, blue: 1))
-                .rotationEffect(.degrees(39)).frame(width: 26, height: 26)
-                .shadow(color: .blue.opacity(0.42), radius: 5)
-            HStack(spacing: 3) {
-                Capsule().frame(width: 2.5, height: 4)
-                Capsule().frame(width: 2.5, height: 4)
-            }.foregroundStyle(.white).offset(x: 1, y: -1)
-        }.padding(2)
-    }
-}
-
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private let store = MeetingStore()
@@ -549,15 +534,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
-        character = panel(size: NSSize(width: 48, height: 48))
-        let view = NSHostingView(rootView: CharacterView())
-        character.contentView = view
-        let hit = CharacterHitArea(frame: view.bounds)
-        hit.autoresizingMask = [.width, .height]
-        hit.toolTip = "Click for your meeting. Drag to move."
-        hit.clicked = { [weak self] in self?.toggleChat() }
-        hit.moved = { [weak self] in self?.placePanels() }
-        view.addSubview(hit)
+        let characterSize = NSSize(width: 48, height: 48)
+        character = panel(size: characterSize)
+        let characterView = MeetingCharacterView(frame: NSRect(origin: .zero, size: characterSize))
+        characterView.image = Bundle.main.url(forResource: "Marcus", withExtension: "png")
+            .flatMap { NSImage(contentsOf: $0) } ?? NSImage(systemSymbolName: "bubble.left.fill", accessibilityDescription: nil)
+        characterView.imageScaling = .scaleProportionallyUpOrDown
+        characterView.toolTip = "Click Marcus for your meeting. Drag to move."
+        characterView.clicked = { [weak self] in self?.toggleChat() }
+        characterView.moved = { [weak self] in self?.placePanels() }
+        character.contentView = characterView
         let area = NSScreen.main?.visibleFrame ?? .zero
         character.title = "Clicky character"
         character.setFrameOrigin(NSPoint(x: area.maxX - 76, y: area.midY))
