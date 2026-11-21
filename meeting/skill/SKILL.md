@@ -13,4 +13,6 @@ A `clicky_question` event from this specific task contains a question the local 
 
 For a question about an attached image, use Read on the listed PNG before diagnosing what is visible. If Read fails, report the failure and ask the user to reattach the original screenshot.
 
+When the user asks Codex to follow up on a memo, match the memo to its original job in this meeting’s history and look up that job’s full Codex thread ID. An Aurelius output link identifies the document. Target the verified thread using the permissions authorized for this request. If the available route only resumes the latest job and several threads could match, explain the ambiguity before dispatch. Check the returned thread ID before telling the user that Codex continued the conversation. A new job ID can represent another turn in the same thread.
+
 If the question watcher reports that /meeting needs to be started first, tell the user to run /meeting, then /clicky-meeting. To manually disconnect, stop only the Clicky monitor using its task ID.
