@@ -24,8 +24,14 @@ PYMAP
 fi
 if [[ "${1:-}" == "--test-composer" ]]; then
     swiftc "${compiler_options[@]}" -DTEST_COMPOSER -parse-as-library -target "$(uname -m)-apple-macosx14.2" \
-        leanring-buddy/Triangle.swift meeting/{MeetingApp,PanelResize,ChatImages}.swift meeting/tests/test_composer.swift -o "$builddir/test-composer"
+        leanring-buddy/Triangle.swift meeting/{MeetingApp,PanelResize,ChatImages,ReplyText}.swift meeting/tests/test_composer.swift -o "$builddir/test-composer"
     "$builddir/test-composer"
+    exit
+fi
+if [[ "${1:-}" == "--test-replies" ]]; then
+    swiftc "${compiler_options[@]}" -parse-as-library -target "$(uname -m)-apple-macosx14.2" \
+        meeting/ReplyText.swift meeting/tests/test_replies.swift -o "$builddir/test-replies"
+    "$builddir/test-replies" "${@:2}"
     exit
 fi
 if [[ "${1:-}" == "--test-resize" ]]; then
@@ -35,7 +41,7 @@ if [[ "${1:-}" == "--test-resize" ]]; then
 fi
 mkdir -p "$destination/Contents/MacOS" "$destination/Contents/Resources"
 swiftc "${compiler_options[@]}" -parse-as-library -target "$(uname -m)-apple-macosx14.2" -O \
-    leanring-buddy/Triangle.swift meeting/MeetingApp.swift meeting/PanelResize.swift meeting/ChatImages.swift -o "$builddir/ClickyMeeting"
+    leanring-buddy/Triangle.swift meeting/{MeetingApp,PanelResize,ChatImages,ReplyText}.swift -o "$builddir/ClickyMeeting"
 install -m 755 "$builddir/ClickyMeeting" "$destination/Contents/MacOS/ClickyMeeting"
 install -m 644 meeting/Info.plist "$destination/Contents/Info.plist"
 install -m 644 meeting/skill/{bridge,recordings,wispr_activity,chat_controls}.py meeting/skill/stop_iterm.applescript "$destination/Contents/Resources/"

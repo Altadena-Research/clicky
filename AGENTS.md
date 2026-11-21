@@ -55,7 +55,8 @@ The optional meeting build shares the original cursor shape with the voice app. 
 | Meeting source | Approximate lines | Purpose |
 |---|---:|---|
 | `leanring-buddy/Triangle.swift` | 20 | Shared Clicky cursor shape |
-| `meeting/MeetingApp.swift` | 715 | Floating character, formatted conversation and session selection |
+| `meeting/MeetingApp.swift` | 695 | Floating character, conversation and session selection |
+| `meeting/ReplyText.swift` | 165 | Markdown reply formatting and resizable native table layout |
 | `meeting/ChatImages.swift` | 73 | Screenshot decoding, previews and session-scoped PNG copies |
 | `meeting/PanelResize.swift` | 65 | Native corner grip and saved conversation size |
 | `meeting/skill/wispr_activity.py` | 40 | Shared Wispr live capture and resume detection from local metadata |
@@ -68,6 +69,7 @@ The optional meeting build shares the original cursor shape with the voice app. 
 | `meeting/tests/test_bridge.py`, `test_recordings.py` | 240 | Synthetic transport and invitation regression tests |
 | `meeting/tests/test_resume.py` | 125 | Wispr resume detection, segment invitations and pinned monitoring |
 | `meeting/tests/test_composer.swift` | 40 | Native clipboard handling and cancellation of queued input |
+| `meeting/tests/test_replies.swift` | 73 | Table parsing, wrapping and horizontal scrolling in the reply view |
 | `meeting/tests/test_resize.swift` | 41 | Isolated AppKit resize regression test |
 
 | File | Lines | Purpose |

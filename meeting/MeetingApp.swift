@@ -272,40 +272,6 @@ final class MeetingStore: ObservableObject {
     }
 }
 
-struct ReplyText: View {
-    let source: String
-
-    var body: some View {
-        // Text's default Markdown mode only interprets inline spans.
-        // Render meeting-note blocks separately to retain headings, lists and code.
-        let lines = source.components(separatedBy: .newlines)
-        var inCode = false
-        let blocks = lines.map { line -> (String, String) in
-            let text = line.trimmingCharacters(in: .whitespaces)
-            if text.hasPrefix("```") { inCode.toggle(); return ("fence", "") }
-            if inCode { return ("code", line) }
-            let prefix = text.prefix { $0 == "#" }
-            if (1...6).contains(prefix.count), text.dropFirst(prefix.count).first == " " {
-                return ("heading", String(text.dropFirst(prefix.count + 1)))
-            }
-            if text.hasPrefix("- ") || text.hasPrefix("* ") { return ("body", "•  " + text.dropFirst(2)) }
-            return ("body", line)
-        }
-        return VStack(alignment: .leading, spacing: 3) {
-            ForEach(blocks.indices, id: \.self) { index in
-                let block = blocks[index]
-                if block.0 == "code" {
-                    Text(verbatim: block.1).font(.system(.caption, design: .monospaced))
-                } else if block.0 != "fence" {
-                    let formatted = try? AttributedString(markdown: block.1, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))
-                    Text(formatted ?? AttributedString(block.1))
-                        .font(block.0 == "heading" ? .headline : .body)
-                }
-            }
-        }.textSelection(.enabled)
-    }
-}
-
 struct InvitationView: View {
     @ObservedObject var store: MeetingStore
     var body: some View {

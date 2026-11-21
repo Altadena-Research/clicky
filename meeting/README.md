@@ -40,6 +40,7 @@ Clicky checks the local Wispr database and recording directory metadata every th
 python3 -B -m unittest discover -s meeting/tests
 ./meeting/build.sh --test-resize
 ./meeting/build.sh --test-composer
+./meeting/build.sh --test-replies
 ```
 
 The Python tests use synthetic Wispr recordings, cursor files and Claude logs. With the patched skill installed they also check that one watcher follows a stop and resume, and that the initial resumed snapshot excludes speech from the earlier segment. The AppKit test exercises the corner grip, minimum size and saved dimensions in an isolated panel.
