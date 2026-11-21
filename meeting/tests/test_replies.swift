@@ -35,7 +35,7 @@ struct ReplyTests {
     }
 
     @MainActor static func snapshot(_ source: String, width: CGFloat, expectsHorizontalScroll: Bool = false) throws -> CGFloat {
-        let content = ReplyText(source: source).frame(width: width, alignment: .leading)
+        let content = ReplyText(source: source, availableWidth: width).frame(width: width, alignment: .leading)
             .fixedSize(horizontal: false, vertical: true).padding(12).background(.background)
         let host = NSHostingView(rootView: content)
         let window = NSWindow(contentRect: .init(x: 0, y: 0, width: width + 24, height: 100),
@@ -53,8 +53,10 @@ struct ReplyTests {
         precondition(scrollsHorizontally(host) == expectsHorizontalScroll, "Unexpected scroll layout for \(width) points")
         if expectsHorizontalScroll {
             func checkVerticalBounds(_ view: NSView) {
-                if view is NSTextField, let scroll = view.enclosingScrollView, let document = scroll.documentView {
-                    let rect = view.convert(view.bounds, to: document)
+                if let reply = view as? ReplySelectionView, let layout = reply.layoutManager, let container = reply.textContainer,
+                   let scroll = reply.enclosingScrollView, let document = scroll.documentView {
+                    layout.ensureLayout(for: container)
+                    let rect = reply.convert(layout.usedRect(for: container), to: document)
                     precondition(rect.minY >= -1 && rect.maxY <= document.bounds.height + 1,
                                  "A table cell would be clipped vertically")
                 }

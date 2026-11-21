@@ -10,7 +10,9 @@ Click the character to expand or collapse the chat. Drag the character to move i
 
 Paste text or a copied screenshot with **⌘V** or **Ctrl+V**. On macOS, **Control–Shift–Command–4** copies a selected area to the clipboard. The paperclip and dragging image files from Finder also add images. Review the thumbnails, then press **Return** to send. **Shift–Return** adds a line. Images can be sent with or without a caption.
 
-The composer distinguishes a message waiting for Claude from a running turn. Sending a follow-up while Claude is working queues it in the current composer. **Ctrl+C** or the square **Stop** button cancels that queued send and keeps the draft. During a reply it requests an interruption in the paired terminal. Clicky waits for Claude’s status to settle. **⌘C** copies selected text.
+Drag across the part of a message you want to keep, then press **⌘C** to copy it. The selection can span paragraphs, list items, and code lines. Select text inside a wide table by dragging within its horizontal scroll area.
+
+The composer distinguishes a message waiting for Claude from a running turn. Sending a follow-up while Claude is working queues it in the current composer. **Ctrl+C** or the square **Stop** button cancels that queued send and keeps the draft. During a reply it requests an interruption in the paired terminal. Clicky waits for Claude’s status to settle.
 
 When tmux is installed, new Clicky conversations use a dedicated tmux pane inside the normal terminal window. Existing iTerm2 sessions can receive Stop through macOS Automation. If macOS declines the request or the terminal host does not support targeted input, press **Esc** in the Claude terminal. Clicky stores sent images as private PNG copies under `~/.local/state/clicky-meeting/attachments/<session-id>/` and asks that Claude conversation to read them.
 
