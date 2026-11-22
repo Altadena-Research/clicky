@@ -60,6 +60,31 @@ class ResumeTests(unittest.TestCase):
         self.db.commit()
         self.assertFalse(recordings.recordings())
 
+    def test_freshness_ignores_old_speech_empty_polls_and_partial_lines(self):
+        invitations = recordings.Invitations()
+        self.addCleanup(invitations.db.close)
+        invitations.refresh(force=True)
+        cursor = {"meeting_id": self.id, "generation": "first"}
+        tracker = recordings.TranscriptFreshness()
+        self.assertEqual(tracker.view(cursor, invitations), ("Waiting for new speech", None))
+        with self.log.open("a") as stream:
+            stream.write('{"text":"New speech"}')
+        self.assertEqual(tracker.view(cursor, invitations), ("Waiting for new speech", None))
+        with self.log.open("a") as stream:
+            stream.write("\n")
+        label, stamp = tracker.view(cursor, invitations)
+        self.assertEqual(label, "Last transcript update")
+        self.assertAlmostEqual(stamp, time.time(), delta=2)
+        self.log.touch()
+        self.assertEqual(tracker.view(cursor, invitations)[1], stamp)
+        with self.log.open("w") as stream:
+            stream.write(json.dumps({"text": "Old segment", "endEpochMs": self.stop - 2000}) + "\n")
+        self.assertEqual(tracker.view(cursor, invitations), ("Waiting for new speech", None))
+        self.db.execute("UPDATE Meetings SET serverRecordingLive=0")
+        self.db.commit()
+        invitations.refresh(force=True)
+        self.assertEqual(tracker.view(cursor, invitations), ("Recording inactive", None))
+
     def test_resumed_segment_after_dismissal_and_after_existing_pair(self):
         ui = recordings.Invitations()
         self.addCleanup(ui.db.close)

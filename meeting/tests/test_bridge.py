@@ -2,6 +2,7 @@ import json
 import os
 from pathlib import Path
 import select
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -203,6 +204,70 @@ class MeetingBridgeTests(unittest.TestCase):
         ack = self.read(ui)
         self.assertEqual((ack["type"], ack["requestID"]), ("sent", second["requestID"]))
         self.assertEqual(self.read(listener)["question"], "Second")
+
+    def test_focused_feed_and_paginated_full_history(self):
+        self.listen()
+        log = self.project / (self.session + ".jsonl")
+        rows = [{"type": "user", "uuid": "event", "origin": {"kind": "task-notification"},
+                 "message": {"content": "<task-notification>Transcript batch</task-notification>"}}]
+        for i in range(110):
+            rows.append({"type": "assistant", "parentUuid": "event", "uuid": str(i),
+                         "message": {"content": "Notes. Nothing to add."}})
+        rows.append({"type": "assistant", "parentUuid": "event", "uuid": "useful",
+                     "message": {"content": "The deadline is today."}})
+        log.write_text("".join(json.dumps(dict(r, sessionId=self.session, timestamp=str(n).zfill(4))) + "\n"
+                               for n, r in enumerate(rows)))
+        ui = self.process("ui")
+        self.read(ui)
+        self.command(ui, op="select", session=self.session)
+        view = self.read(ui)
+        self.assertEqual([m["id"] for m in view["messages"]], ["useful"])
+        self.assertEqual((view["routineCount"], len(view["routineUpdates"])), (110, 8))
+        self.command(ui, op="history", session=self.session, more=True)
+        view = self.read(ui)
+        self.assertTrue(view["fullHistory"] and view["hasEarlier"])
+        self.assertEqual(len(view["messages"]), 100)
+        self.assertEqual(view["latestAnswer"]["id"], "useful")
+        self.command(ui, op="history", session=self.session, more=True)
+        view = self.read(ui)
+        self.assertFalse(view["hasEarlier"])
+        self.assertEqual(len(view["messages"]), 111)
+        self.command(ui, op="history", session=self.session, more=False)
+        self.assertEqual(len(self.read(ui)["messages"]), 1)
+
+    def test_archived_meeting_keeps_outputs_read_only(self):
+        prefs = Path(self.env["CLICKY_STATE_DIR"])
+        prefs.mkdir()
+        with sqlite3.connect(prefs / "invitations.sqlite") as db:
+            db.execute("CREATE TABLE invitations (meeting TEXT PRIMARY KEY, status TEXT, session TEXT, since REAL, segment INT)")
+            db.execute("INSERT INTO invitations VALUES (?,?,?,?,0)", (str(uuid.uuid4()), "opened", self.session, time.time()))
+        url = "http://aurelius-mac-2:8700/output/raw/0123456789ab"
+        rows = [
+            ("assistant", [{"type": "tool_use", "name": "Bash", "id": "run", "input": {"description": "Search"}}], {}),
+            ("user", [{"type": "tool_result", "tool_use_id": "run"}], {"toolUseResult": {"backgroundTaskId": "job-1"}}),
+            ("user", "<task-notification><task-id>job-1</task-id><status>completed</status></task-notification>",
+             {"origin": {"kind": "task-notification"}}),
+            ("assistant", [{"type": "tool_use", "name": "Bash", "id": "publish",
+                            "input": {"command": "python3 ~/tools/hub-output/capture.py --link report.md"}}], {}),
+            ("user", [{"type": "tool_result", "tool_use_id": "publish"}], {"toolUseResult": {"stdout": url + "  Review"}}),
+        ]
+        with (self.project / (self.session + ".jsonl")).open("w") as log:
+            for n, (role, content, extras) in enumerate(rows):
+                log.write(json.dumps(dict(type=role, sessionId=self.session, uuid=str(n), parentUuid=str(n-1),
+                                          timestamp="2026-01-01T00:00:00Z", message={"content": content}, **extras)) + "\n")
+        ui = self.process("ui")
+        initial = self.read(ui)
+        self.assertEqual(initial["pastSessions"], [self.session])
+        self.assertFalse(initial["outputs"])
+        self.command(ui, op="select", session=self.session)
+        view = self.read(ui)
+        self.assertFalse(view["connected"])
+        job = next(i for i in view["activityItems"] if i["reference"] == "job-1")
+        self.assertEqual((job["status"], job["outputs"][0]["url"]), ("completed", url))
+        self.command(ui, op="ask", session=self.session, question="Test")
+        self.assertEqual(self.read(ui)["type"], "error")
+        self.command(ui, op="select", session=self.other)
+        self.assertEqual(self.read(ui)["type"], "error")
 
     def test_duplicate_and_unpaired_listeners(self):
         self.listen()

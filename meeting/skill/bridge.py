@@ -16,9 +16,10 @@ import subprocess
 import time
 import uuid
 
-from recordings import Invitations, PREFERENCES, read_object
-from chat_controls import SessionActivity, interrupt, phase
+from recordings import Invitations, TranscriptFreshness, PREFERENCES, read_object
+from chat_controls import SessionActivity, interrupt, phase, review_terminal
 from meeting_activity import MeetingActivity
+from meeting_feed import MeetingFeed
 
 ROOT = Path(os.environ.get("CLICKY_RUNTIME_DIR", f"/tmp/clicky-meeting-{os.getuid()}"))
 PROJECTS = Path(os.environ.get("CLAUDE_CONFIG_DIR", str(Path.home() / ".claude"))) / "projects"
@@ -233,39 +234,16 @@ def visible_message(row, folder):
             "text": content.strip(), "time": row.get("timestamp", "")}
 
 
-def recent_messages(path, session, folder):
-    messages = []
-    if path is None:
-        return messages
-    with path.open("rb") as stream:
-        # Keep refresh bounded even for sessions with large embedded tool results.
-        end = stream.seek(0, os.SEEK_END)
-        start = max(0, end - 2 * 1024 * 1024)
-        stream.seek(max(0, start - 1))
-        if start and stream.read(1) != b"\n":
-            stream.readline()
-        for line in stream:
-            if not line.endswith(b"\n"):
-                break
-            try:
-                row = json.loads(line)
-                if row.get("sessionId") != session:
-                    continue
-                message = visible_message(row, folder)
-                if message and message["id"]:
-                    messages.append(message)
-            except (ValueError, TypeError, AttributeError, KeyError):
-                continue
-    return messages[-40:]
-
-
 def ui():
     # A single helper process sleeps between file checks. Only the explicitly
     # selected Claude transcript is opened. Question text travels over a pipe.
     invitations = Invitations()
     selected = None
     log = None
-    fingerprint = None
+    feed = MeetingFeed()
+    freshness = TranscriptFreshness()
+    history_session = None
+    history_limit = 0
     previous = None
     messages = []
     questions = {}
@@ -280,26 +258,33 @@ def ui():
             available = sockets()
             invitation = invitations.view(available)
             if invitations.next_selection:
-                selected, log, fingerprint, messages = invitations.next_selection, None, None, []
+                selected, log = invitations.next_selection, None
                 invitations.next_selection = None
                 emit({"type": "opened", "session": selected})
-            if selected in available and log is None:
+            archives = invitations.past_sessions()
+            if selected and log is None and (selected in available or selected in archives):
                 log = transcript_path(selected)
-            if selected not in available:
-                log, fingerprint = None, None
             entry = registry.entry(selected) if selected in available else {}
-            activity_items = work.snapshot(selected if selected in available else None, log, entry)
+            activity_items = [dict(row) for row in work.snapshot(selected, log, entry)]
+            if selected not in available:
+                for item in activity_items:
+                    if item["status"] in ("running", "listening", "waiting", "queued"):
+                        item["status"] = "unknown"
             folder = attachment_folder(selected, entry) if selected in available else None
-            if log:
-                try:
-                    info = log.stat()
-                    stamp = (info.st_ino, info.st_size, info.st_mtime_ns, folder)
-                    if fingerprint != stamp:
-                        messages = recent_messages(log, selected, folder)
-                        fingerprint = stamp
-                except FileNotFoundError:
-                    log = None
-                    fingerprint = None
+            if folder is None and feed.identity and feed.identity[0] == selected:
+                folder = feed.identity[-1]
+            if selected != history_session:
+                history_session, history_limit = selected, 0
+            feed.read(log, selected, folder, visible_message)
+            messages = list(feed.lines.values())[-80:]
+            items_by_ref = {item["reference"]: item for item in activity_items}
+            for owner, urls in feed.bindings.items():
+                target = items_by_ref.get(work.watched_jobs.get(owner, owner)) or items_by_ref.get(owner)
+                if target and target["kind"] not in ("listener", "terminal"):
+                    linked = target.setdefault("outputs", [])
+                    for url in urls:
+                        if feed.outputs[url] not in linked:
+                            linked.append(feed.outputs[url])
             activity = phase(entry)
             flight = flights.get(selected)
             if flight and selected in available:
@@ -337,18 +322,21 @@ def ui():
                 else:
                     activity = "stopping"
             by_id = {item["id"]: item for item in questions.get(selected, [])}
-            by_id.update((item["id"], item) for item in messages)
-            combined = sorted(by_id.values(), key=lambda item: item["time"])
-            labels = {session: session_info(session).get("project", "") for session in available}
-            resume_status = None
-            if selected in available:
-                cursor = read_object(STATE / (selected + ".json"))
-                active = invitations.active.get(cursor.get("meeting_id"))
-                if active and active[1]:
-                    speech = cursor.get("resumed_segment") == active[1] and cursor.get("segment_has_speech")
-                    resume_status = "Following resumed recording" if speech else "Wispr resumed · waiting for new speech"
-            state = {"type": "view", "activity": activity, "resumeStatus": resume_status, "sessions": available, "labels": labels, "selected": selected,
-                     "connected": selected in available, "messages": combined[-40:], "invitation": invitation,
+            by_id.update(feed.lines)
+            combined = sorted(by_id.values(), key=lambda item: item.get("time") or "")
+            labels = dict(archives)
+            labels.update((session, session_info(session).get("project", "")) for session in available)
+            cursor = read_object(STATE / (selected + ".json")) if selected in available else {}
+            resume_status, speech_at = freshness.view(cursor, invitations)
+            focused = [line for line in combined if not line.get("routine")]
+            routine = [line for line in combined if line.get("routine")]
+            state = {"type": "view", "activity": activity, "resumeStatus": resume_status, "speechAt": speech_at,
+                     "sessions": available, "pastSessions": [s for s in archives if s not in available], "labels": labels, "selected": selected, "connected": selected in available,
+                     "messages": combined[-history_limit:] if history_limit else focused[-40:],
+                     "fullHistory": bool(history_limit), "hasEarlier": bool(history_limit and len(combined) > history_limit),
+                     "routineCount": len(routine), "routineUpdates": routine[-8:],
+                     "latestAnswer": next((line for line in reversed(focused) if line["role"] == "assistant"), None),
+                     "outputs": list(reversed(feed.outputs.values())), "invitation": invitation,
                      "project": invitations.project, "attachmentFolder": str(folder) if folder else None,
                      "detectionError": invitations.problem, "activityItems": activity_items}
             if state != previous:
@@ -377,9 +365,16 @@ def ui():
                     continue
                 requested = session_id(request["session"])
                 if request["op"] == "select":
-                    if requested not in sockets():
-                        raise ValueError("This conversation is no longer paired.")
-                    selected, log, fingerprint, messages = requested, transcript_path(requested), None, []
+                    if requested not in sockets() and requested not in archives:
+                        raise ValueError("This conversation is no longer available.")
+                    selected, log = requested, transcript_path(requested)
+                elif request["op"] in ("history", "review"):
+                    if requested != selected or (request["op"] == "review" and requested not in sockets()):
+                        raise ValueError("The selected conversation disconnected.")
+                    if request["op"] == "history":
+                        history_limit = history_limit + 100 if request.get("more") else 0
+                    else:
+                        review_terminal(registry.entry(requested), requested)
                 elif request["op"] == "stop":
                     if requested != selected or requested not in sockets():
                         raise ValueError("The selected conversation disconnected.")

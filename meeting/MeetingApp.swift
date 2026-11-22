@@ -16,6 +16,7 @@ private struct BridgeEvent: Decodable {
     let pauseQueue: Bool?
     let activity: String?
     let activityItems: [MeetingWorkItem]?
+    let pastSessions: [String]?
     let sessions: [String]?
     let labels: [String: String]?
     let selected: String?
@@ -25,6 +26,13 @@ private struct BridgeEvent: Decodable {
     let invitation: Invitation?
     let project: String?
     let attachmentFolder: String?
+    let speechAt: TimeInterval?
+    let fullHistory: Bool?
+    let hasEarlier: Bool?
+    let routineCount: Int?
+    let routineUpdates: [ChatLine]?
+    let latestAnswer: ChatLine?
+    let outputs: [MeetingOutput]?
     let resumeStatus: String?
     let detectionError: String?
     let message: String?
@@ -33,6 +41,7 @@ private struct BridgeEvent: Decodable {
 @MainActor
 final class MeetingStore: ObservableObject {
     @Published var sessions: [String] = []
+    @Published var pastSessions: [String] = []
     @Published var labels: [String: String] = [:]
     @Published var selected: String?
     @Published var connected = false
@@ -80,6 +89,12 @@ final class MeetingStore: ObservableObject {
     @Published var error: String?
     @Published var invitation: Invitation?
     @Published var project = ""
+    @Published var speechAt: TimeInterval?
+    @Published var fullHistory = false
+    @Published var hasEarlier = false
+    @Published var routineCount = 0
+    @Published var routineUpdates: [ChatLine] = []
+    @Published var outputs: [MeetingOutput] = []
     @Published var resumeStatus: String?
     @Published var detectionError: String?
     var invitationChanged: (() -> Void)?
@@ -199,6 +214,27 @@ final class MeetingStore: ObservableObject {
         return true
     }
 
+    func history(more: Bool) {
+        guard let selected else { return }
+        showingActivity = false
+        write(["op": "history", "session": selected, "more": more])
+    }
+
+    func reviewTerminal() {
+        guard let selected, connected else { return }
+        write(["op": "review", "session": selected])
+    }
+
+    func followUp(_ item: MeetingWorkItem) {
+        guard connected, activityItems.contains(where: { $0.id == item.id }) else { return }
+        var context = "Follow up on “" + item.title + "” (job " + item.reference
+        if let thread = item.thread { context += ", original thread " + thread }
+        context += ")."
+        for result in item.outputs ?? [] where result.destination != nil { context += " " + result.url }
+        draft = draft.isEmpty ? context + " " : draft + "\n\n" + context
+        showingActivity = false
+    }
+
     func stopReply() {
         guard let selected, canStop else { return }
         write(["op": "stop", "session": selected])
@@ -301,11 +337,18 @@ final class MeetingStore: ObservableObject {
             } else if event.type == "view" {
                 project = event.project ?? ""
                 resumeStatus = event.resumeStatus
+                speechAt = event.speechAt
+                fullHistory = event.fullHistory == true
+                hasEarlier = event.hasEarlier == true
+                routineCount = event.routineCount ?? 0
+                routineUpdates = event.routineUpdates ?? []
+                outputs = event.outputs ?? []
                 detectionError = event.detectionError
                 let changed = invitation != event.invitation
                 invitation = event.invitation
                 if changed { error = nil; invitationChanged?() }
                 sessions = event.sessions ?? []
+                pastSessions = event.pastSessions ?? []
                 labels = event.labels ?? [:]
                 if selected != event.selected {
                     showingActivity = false
@@ -317,7 +360,7 @@ final class MeetingStore: ObservableObject {
                 selected = event.selected
                 attachmentFolder = event.attachmentFolder
                 connected = event.connected == true
-                let items = connected ? event.activityItems ?? [] : []
+                let items = event.activityItems ?? []
                 if items != activityItems { activityItems = items }
                 activity = event.activity ?? "unknown"
                 if !connected, let selected, !queue.isEmpty, queueProblem == nil {
@@ -325,7 +368,7 @@ final class MeetingStore: ObservableObject {
                 }
                 dispatchNext()
                 messages = event.messages ?? []
-                let assistant = messages.last { $0.role == "assistant" }
+                let assistant = event.latestAnswer ?? (fullHistory ? nil : messages.last { $0.role == "assistant" })
                 if let assistant, let selected, loadedSelection == selected,
                    assistant.id != previousAssistant, connected {
                     receivedSuggestion?(assistant.text)
@@ -391,10 +434,17 @@ struct MeetingView: View {
                 Image(systemName: "waveform").foregroundStyle(Color.accentColor)
                 Text("Meeting").font(.title2.bold())
                 Spacer()
-                if store.sessions.count > 1 || (!store.sessions.isEmpty && !store.connected) {
-                    Menu("Sessions") {
+                if !store.pastSessions.isEmpty || store.sessions.count > 1 || (!store.sessions.isEmpty && !store.connected) {
+                    Menu("Meetings") {
                         ForEach(store.sessions, id: \.self) { id in
                             Button(store.label(id)) { store.select(id) }
+                        }
+                        if !store.pastSessions.isEmpty {
+                            Section("Past meetings") {
+                                ForEach(store.pastSessions, id: \.self) { id in
+                                    Button(store.label(id)) { store.select(id) }
+                                }
+                            }
                         }
                     }.fixedSize()
                 }
@@ -404,11 +454,18 @@ struct MeetingView: View {
             if store.invitation != nil { InvitationView(store: store) }
             if let selected = store.selected {
                 HStack {
-                    Label(store.connected ? store.label(selected) : "Session disconnected",
-                          systemImage: store.connected ? "link" : "link.badge.plus")
-                        .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    ViewThatFits(in: .horizontal) {
+                        HStack(spacing: 7) {
+                            sessionLabel(selected)
+                            freshnessLabel
+                        }.fixedSize(horizontal: true, vertical: false)
+                        VStack(alignment: .leading, spacing: 2) {
+                            sessionLabel(selected)
+                            freshnessLabel
+                        }
+                    }.font(.caption).foregroundStyle(.secondary)
                     Spacer(minLength: 4)
-                    if store.connected {
+                    if store.connected || !store.activityItems.isEmpty || !store.outputs.isEmpty {
                         Button { store.showingActivity.toggle() } label: {
                             Label(store.backgroundCount > 0 ? "\(store.backgroundCount) working" : "Activity",
                                   systemImage: "person.2")
@@ -418,15 +475,22 @@ struct MeetingView: View {
                             .accessibilityLabel("Meeting activity, \(store.backgroundCount) working in the background")
                             .help("Show the paired terminal, agents, and background tasks")
                             .onHover { $0 ? NSCursor.pointingHand.set() : NSCursor.arrow.set() }
+                    } else if !store.messages.isEmpty && !store.fullHistory {
+                        Button("Full history") { store.history(more: true) }.font(.caption).buttonStyle(.link)
                     }
                 }
             }
-            if let status = store.resumeStatus {
-                Label(status, systemImage: "waveform").font(.caption).foregroundStyle(.secondary)
+            if store.fullHistory {
+                HStack {
+                    Text("Full history").fontWeight(.semibold)
+                    if store.hasEarlier { Button("Load earlier") { store.history(more: true) } }
+                    Spacer()
+                    Button("Back to chat") { store.history(more: false) }
+                }.font(.caption).buttonStyle(.link)
             }
             Divider()
             GeometryReader { area in
-                let open = store.showingActivity && store.connected
+                let open = store.showingActivity
                 let wide = area.size.width >= 590
                 HStack(spacing: open && wide ? 12 : 0) {
                     transcript
@@ -434,7 +498,10 @@ struct MeetingView: View {
                         .clipped().opacity(open && !wide ? 0 : 1)
                         .accessibilityHidden(open && !wide)
                     if open {
-                        MeetingActivityInspector(items: store.activityItems) { store.showingActivity = false }
+                        MeetingActivityInspector(items: store.activityItems, outputs: store.outputs,
+                            routineUpdates: store.routineUpdates, routineCount: store.routineCount,
+                            showHistory: { store.history(more: true) }, review: store.reviewTerminal,
+                            canFollowUp: store.connected, followUp: { store.followUp($0); typing = true }, close: { store.showingActivity = false })
                             .frame(width: wide ? 244 : nil).frame(maxWidth: wide ? nil : .infinity)
                             .id(store.selected)
                     }
@@ -448,6 +515,9 @@ struct MeetingView: View {
                         ProgressView().controlSize(.small)
                     }
                     Text(activity).font(.caption).foregroundStyle(.secondary)
+                    if store.activity == "attention" {
+                        Button("Review in terminal", action: store.reviewTerminal).buttonStyle(.link).font(.caption)
+                    }
                     Spacer()
                 }
             }
@@ -499,13 +569,37 @@ struct MeetingView: View {
         .dropDestination(for: URL.self) { urls, _ in store.attachFiles(urls) }
     }
 
+    private func sessionLabel(_ selected: String) -> some View {
+        Label(store.connected ? store.label(selected) : store.label(selected) + " · Read-only",
+              systemImage: store.connected ? "link" : "link.badge.plus").lineLimit(1)
+    }
+
+    @ViewBuilder private var freshnessLabel: some View {
+        if let status = store.resumeStatus {
+            if let stamp = store.speechAt {
+                TimelineView(.periodic(from: .now, by: 1)) { clock in
+                    let age = max(0, Int(clock.date.timeIntervalSince1970 - stamp))
+                    let elapsed = age < 60 ? "\(age)s" : age < 3600 ? "\(age / 60)m" : "\(age / 3600)h"
+                    Text("Last transcript update \(elapsed) ago").monospacedDigit()
+                }
+            } else {
+                Text(status)
+            }
+        }
+    }
+
     @ViewBuilder private var transcript: some View {
         if store.messages.isEmpty {
             VStack(alignment: .leading, spacing: 8) {
                 Text(store.connected ? "Ready for your question" : "Connect your meeting").font(.headline)
                 Text(store.connected ? "Replies from this Claude conversation appear here." :
-                    store.detectionError ?? "Start a Wispr Notetaker recording. Clicky will offer to open its Claude conversation.")
+                    store.detectionError ?? (store.pastSessions.isEmpty ? "Start a Wispr Notetaker recording to connect." :
+                        "Choose a past conversation from Meetings, or start a Wispr recording."))
+
                     .foregroundStyle(.secondary).textSelection(.enabled)
+                if !store.connected {
+                    Link("Open Aurelius outputs", destination: URL(string: "http://aurelius-mac-2:8700/output")!)
+                }
             }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading).padding(.vertical, 12)
         } else {
             ConversationTranscript(messages: store.messages).id(store.selected)

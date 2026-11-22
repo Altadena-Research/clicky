@@ -14,6 +14,12 @@ Drag from any word in the conversation to a word in an earlier or later reply, t
 
 Click **Activity** beside the session name to inspect the paired terminal, Claude agents, background shells, listeners, and linked Codex jobs. Running rows show elapsed time beside their status. Completed work shows its final duration when both timestamps are available. Terminal and Codex subagent timers measure the current turn. Expand a row to see its start time, ID, and available thread or update details. Wide panels show activity beside the chat. Narrow panels show it in the transcript area and keep the composer available. Click **Close activity** to return.
 
+The chat keeps direct answers, meeting advice, decisions and actionable errors. Recognized housekeeping replies to automatic events appear under **Activity → Routine updates**. **Full history** shows the original conversation, including those updates. **Load earlier** pages back through the selected session.
+
+A published Aurelius report appears at the top of Activity. Expand **Finished** and choose **Open result** on the originating job to open its report directly. **Earlier outputs** lists other reports published from this conversation, and **All outputs** opens the Aurelius index. Marcus matches a successful publication to the task that triggered it or to an explicit job reference. Expand a job and choose **Follow up** to put the job ID, known thread, and result in the composer. **Review in terminal** brings the paired tab forward when Claude requests input. **Meetings → Past meetings** opens a previously paired conversation for read-only review.
+
+The session header shows **Waiting for new speech** after a recording resumes. The first complete speech record in the current segment starts **Last transcript update**. Microphone writes and listener heartbeats leave that timestamp alone.
+
 A count on Marcus shows running background agents and jobs. Clicking the count opens activity directly. The panel lists the main terminal, queued jobs, idle agents, and listeners separately. The local helper follows Claude’s task records, the Codex companion’s job registry, and descendant threads recorded for those jobs. **Unconfirmed** means those sources could not establish a current state.
 
 Press **Return** for each follow-up, even while Claude is working. Each message keeps its own attachments and clears the input for the next one. Click **2 queued** (or the current count) above the composer to see the send order. Use **×** beside any waiting message to remove it. With an empty composer, **Ctrl+C** brings the newest waiting message back for editing. The square **Stop** button interrupts the current reply. With no waiting messages, **Ctrl+C** also stops the current reply.
@@ -42,7 +48,7 @@ The patch targets the Wispr skill with `scripts/meeting.py`. For checkouts with 
 
 To use a particular terminal chat, run `/meeting` there and choose **Open** in Clicky. For a listener that was already running when you installed the patch, run `/clicky-meeting` once in that conversation. This is also the manual recovery if a question listener times out. Use `/meeting stop` to disconnect that conversation from the recording.
 
-Clicky checks the local Wispr database and recording directory metadata every three seconds. Opening a meeting lets your Claude skill load its transcript. Questions travel over a private local socket to a Monitor in the selected conversation. The panel displays up to 40 visible messages from the last 2 MiB of that session’s Claude log. The Claude session’s normal context and retention settings apply.
+Clicky checks the local Wispr database and recording directory metadata every three seconds. Opening a meeting lets your Claude skill load its transcript. Questions travel over a private local socket to a Monitor in the selected conversation. The default chat shows the latest 40 focused messages. Full history loads 100 messages at a time from the selected local Claude log. The Claude session’s normal context and retention settings apply.
 
 ## Tests
 

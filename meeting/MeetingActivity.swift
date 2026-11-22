@@ -1,5 +1,16 @@
 import SwiftUI
 
+struct MeetingOutput: Decodable, Equatable, Identifiable {
+    let url: String
+    let title: String
+    var id: String { url }
+    var destination: URL? {
+        guard url.range(of: #"^http://aurelius-mac-2:8700/output/raw/[0-9a-f]{12}\z"#, options: .regularExpression) != nil
+        else { return nil }
+        return URL(string: url)
+    }
+}
+
 struct MeetingWorkItem: Decodable, Equatable, Identifiable {
     let id: String
     let reference: String
@@ -9,6 +20,7 @@ struct MeetingWorkItem: Decodable, Equatable, Identifiable {
     let updated: String?
     let detail: String?
     let thread: String?
+    var outputs: [MeetingOutput]? = nil
     var startedAt: TimeInterval? = nil
     var endedAt: TimeInterval? = nil
 
@@ -76,8 +88,17 @@ struct MeetingWorkItem: Decodable, Equatable, Identifiable {
 
 struct MeetingActivityInspector: View {
     let items: [MeetingWorkItem]
+    var outputs: [MeetingOutput] = []
+    var routineUpdates: [ChatLine] = []
+    var routineCount = 0
+    var showHistory: () -> Void = {}
+    var review: () -> Void = {}
+    var canFollowUp = true
+    var followUp: (MeetingWorkItem) -> Void = { _ in }
     let close: () -> Void
     @State private var expanded: String?
+    @State private var showReports = false
+    @State private var showRoutine = false
     @State private var showFinished = false
     @State private var showUnknown = false
 
@@ -96,6 +117,21 @@ struct MeetingActivityInspector: View {
             }
             ScrollView {
                 VStack(alignment: .leading, spacing: 9) {
+                    if let latest = outputs.first, let url = latest.destination {
+                        Link(destination: url) {
+                            Label(latest.title, systemImage: "doc.text").font(.callout).lineLimit(2)
+                        }.help("Open latest published result").accessibilityLabel("Open result: " + latest.title)
+                    }
+                    if outputs.count > 1 {
+                        DisclosureGroup("Earlier outputs (\(outputs.count - 1))", isExpanded: $showReports) {
+                            ForEach(outputs.dropFirst()) { result in
+                                if let url = result.destination {
+                                    Link(result.title, destination: url).lineLimit(2).help(result.title)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                }
+                            }
+                        }.font(.caption)
+                    }
                     section("Paired terminal", rows: items.filter { $0.kind == "terminal" })
                     section("Background work", rows: items.filter {
                         $0.kind != "terminal" && $0.kind != "listener" && !$0.isFinished && $0.status != "unknown"
@@ -111,6 +147,19 @@ struct MeetingActivityInspector: View {
                         DisclosureGroup("Finished (\(finished.count))", isExpanded: $showFinished) { rows(finished) }
                             .font(.caption.weight(.semibold))
                     }
+                    if routineCount > 0 {
+                        DisclosureGroup("Routine updates (\(routineCount))", isExpanded: $showRoutine) {
+                            ForEach(routineUpdates.reversed()) { update in
+                                Text(update.text).font(.caption).textSelection(.enabled)
+                                    .frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 2)
+                            }
+                        }.font(.caption.weight(.semibold))
+                    }
+                    HStack {
+                        Button("Full history", action: showHistory).buttonStyle(.link)
+                        Spacer()
+                        Link("All outputs", destination: URL(string: "http://aurelius-mac-2:8700/output")!)
+                    }.font(.caption)
                 }.frame(maxWidth: .infinity, alignment: .leading)
             }
         }.padding(10)
@@ -136,6 +185,17 @@ struct MeetingActivityInspector: View {
                 } else {
                     rowButton(entry, elapsed: entry.elapsed(at: .now))
                 }
+                if entry.kind == "terminal" && entry.status == "waiting" {
+                    Button("Review in terminal", action: review).buttonStyle(.link).font(.caption)
+                }
+                ForEach(entry.outputs ?? []) { result in
+                    if let url = result.destination {
+                        Link(destination: url) {
+                            Label(entry.outputs?.count == 1 ? "Open result" : result.title, systemImage: "arrow.up.right.square")
+                                .lineLimit(2)
+                        }.font(.caption).help(result.title)
+                    }
+                }
                 if expanded == entry.id {
                     VStack(alignment: .leading, spacing: 3) {
                         if let detail = entry.detail, !detail.isEmpty { Text(detail) }
@@ -144,6 +204,9 @@ struct MeetingActivityInspector: View {
                         if let start = entry.startedAt {
                             let date = Date(timeIntervalSince1970: start)
                             Text("Started " + date.formatted(date: .abbreviated, time: .standard)).font(.caption2)
+                        }
+                        if canFollowUp && entry.kind != "listener" && entry.kind != "terminal" {
+                            Button("Follow up") { followUp(entry) }.buttonStyle(.link)
                         }
                         if let updated = entry.updatedLabel { Text("Updated " + updated).font(.caption2) }
                     }.font(.caption).foregroundStyle(.secondary).textSelection(.enabled)

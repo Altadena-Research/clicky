@@ -55,24 +55,26 @@ The optional meeting build uses a pixel portrait of Marcus Aurelius as its float
 | Meeting source | Approximate lines | Purpose |
 |---|---:|---|
 | `meeting/Resources/Marcus.png` | — | Transparent portrait displayed in the 48-point meeting character window |
-| `meeting/MeetingApp.swift` | 800 | Floating character, conversation, session selection and per-session message delivery |
+| `meeting/MeetingApp.swift` | 895 | Floating character, conversation, session selection and per-session message delivery |
 | `meeting/MeetingQueue.swift` | 70 | Queued message previews, attachment counts and expandable composer queue |
-| `meeting/MeetingActivity.swift` | 180 | Responsive activity drawer, live elapsed times and expandable task details |
+| `meeting/MeetingActivity.swift` | 245 | Activity drawer with task clocks, report links, follow-ups and routine updates |
 | `meeting/ReplyText.swift` | 400 | One selectable TextKit transcript with speaker labels, image thumbnails and resizable Markdown tables |
 | `meeting/ChatImages.swift` | 73 | Screenshot decoding, previews and session-scoped PNG copies |
 | `meeting/PanelResize.swift` | 65 | Native corner grip and saved conversation size |
 | `meeting/skill/wispr_activity.py` | 40 | Shared Wispr live capture and resume detection from local metadata |
-| `meeting/skill/recordings.py` | 265 | Detect local recordings, track invitations and open the matching Claude session |
+| `meeting/skill/recordings.py` | 360 | Recording invitations, paired meeting history and segment-scoped transcript freshness |
 | `meeting/wispr-skill.patch` | 262 | Pairing requests, resume boundaries and a pinned watcher for the personal Wispr skill |
-| `meeting/skill/bridge.py` | 409 | Local transport, pinned listener and transcript filtering |
+| `meeting/skill/bridge.py` | 435 | Local transport, pinned listener, session history and actionable job snapshots |
+| `meeting/skill/meeting_feed.py` | 120 | Incremental focused chat, full history and task-scoped Aurelius publisher receipts |
 | `meeting/skill/meeting_activity.py` | 350 | Session-scoped Claude and Codex task states, ownership and recorded timing |
-| `meeting/skill/chat_controls.py`, `stop_iterm.applescript` | 120 | Claude activity and targeted terminal interruptions |
+| `meeting/skill/chat_controls.py`, `stop_iterm.applescript`, `review_terminal.applescript` | 200 | Claude activity, targeted terminal focus and interruption |
 | `meeting/skill/SKILL.md` | 15 | Attach the question monitor inside the running session |
 | `meeting/build.sh`, `meeting/Info.plist` | 50 | Build and bundle the meeting-only app using Command Line Tools |
-| `meeting/tests/test_bridge.py`, `test_recordings.py` | 240 | Synthetic transport and invitation regression tests |
+| `meeting/tests/test_bridge.py`, `test_recordings.py` | 390 | Synthetic transport, read-only history, published results and invitation tests |
 | `meeting/tests/test_resume.py` | 125 | Wispr resume detection, segment invitations and pinned monitoring |
+| `meeting/tests/test_feed.py` | 110 | Quiet routing, publication ownership and terminal review regressions |
 | `meeting/tests/test_activity.py` | 155 | Scoped activity lifecycle, recorded start and finish times, and child-thread attribution |
-| `meeting/tests/test_composer.swift` | 360 | Transcript selection, composer shortcuts, activity layout and timers, and multi-message queues |
+| `meeting/tests/test_composer.swift` | 400 | Transcript selection, composer shortcuts, activity layout and timers, and multi-message queues |
 | `meeting/tests/test_replies.swift` | 73 | Table parsing, wrapping and horizontal scrolling in the reply view |
 | `meeting/tests/test_resize.swift` | 41 | Isolated AppKit resize regression test |
 

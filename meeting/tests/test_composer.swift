@@ -66,11 +66,12 @@ struct ComposerTests {
         print("Passed screenshot and text paste, image-only draft, and Ctrl+C cancelling queued input.")
 
         try testQueue(image: image, project: project)
+        try testMeetingActions()
 
         store.activity = "ready"
         let source = "## Notes\nFirst **review** today.\n```text\nAlpha section\n  Beta section\n```\nThen discuss."
         let older = ChatLine(id: "older", role: "user", images: [file.path],
-                             text: "Earlier [update](https://example.test/notes).")
+                             text: "Earlier [update](https://example.test/notes). http://aurelius-mac-2:8700/output/raw/ff0c8d99c07c")
         let first = ChatLine(id: "demo", role: "assistant", images: nil, text: source)
         let second = ChatLine(id: "question", role: "user", images: nil, text: "Which group owns the review?")
         let third = ChatLine(id: "followup", role: "assistant", images: nil, text: "The design group owns it.")
@@ -96,6 +97,10 @@ struct ComposerTests {
         precondition(thumbnail.location != NSNotFound && link.location != NSNotFound)
         precondition(view.textStorage?.attribute(.attachment, at: thumbnail.location, effectiveRange: nil) is NSTextAttachment)
         precondition(view.textStorage?.attribute(.link, at: link.location, effectiveRange: nil) != nil)
+        let reportURL = "http://aurelius-mac-2:8700/output/raw/ff0c8d99c07c"
+        let reportRange = shown.range(of: reportURL)
+        precondition(reportRange.location != NSNotFound)
+        precondition((view.textStorage?.attribute(.link, at: reportRange.location, effectiveRange: nil) as? URL)?.absoluteString == reportURL)
         func position(_ character: Int) -> NSPoint {
             layout.ensureLayout(for: container)
             let glyph = layout.glyphIndexForCharacter(at: character)
@@ -231,6 +236,44 @@ struct ComposerTests {
         buttonClick(at: NSPoint(x: panel.contentLayoutRect.maxX - 29, y: 27))
         precondition(store.draft.isEmpty && store.waiting.last?.text == "I can keep typing")
         print("Passed compact queue disclosure, removal of a middle row, and submission from the still-active composer.")
+    }
+
+    @MainActor static func testMeetingActions() throws {
+        var requests: [[String: Any]] = []
+        let store = MeetingStore { requests.append($0) }
+        let session = UUID().uuidString
+        let url = "http://aurelius-mac-2:8700/output/raw/ff0c8d99c07c"
+        let report = ["title": "Search review", "url": url]
+        let job: [String: Any] = ["id": "codexJob:job-2", "reference": "job-2", "kind": "codexJob", "title": "Search",
+                                  "status": "completed", "thread": "thread-1", "outputs": [report]]
+        let answer = ["id": "a", "role": "assistant", "text": "Finished"]
+        let routine = ["id": "b", "role": "assistant", "text": "Listener restarted"]
+        var notices = 0
+        store.receivedSuggestion = { _ in notices += 1 }
+        var event: [String: Any] = ["type": "view", "selected": session, "connected": true, "activity": "attention",
+                                    "latestAnswer": answer, "messages": [answer], "outputs": [report], "activityItems": [job],
+                                    "resumeStatus": "Waiting for new speech"]
+        func update() throws {
+            var bytes = try JSONSerialization.data(withJSONObject: event); bytes.append(10); store.receive(bytes)
+        }
+        try update()
+        precondition(store.outputs.first?.destination?.absoluteString == url && store.speechAt == nil)
+        precondition(MeetingOutput(url: url + "/../../wrong", title: "Invalid").destination == nil)
+        store.reviewTerminal()
+        store.history(more: true)
+        precondition(requests.map { $0["op"] as? String } == ["review", "history"])
+        precondition(requests.allSatisfy { $0["session"] as? String == session })
+        event["fullHistory"] = true
+        event["messages"] = [answer, routine]
+        event["speechAt"] = Date.now.timeIntervalSince1970
+        event["resumeStatus"] = "Last transcript update"
+        try update()
+        precondition(store.fullHistory && store.messages.count == 2 && store.speechAt != nil && notices == 0)
+        store.draft = "Who should I call?"
+        store.followUp(store.activityItems[0])
+        precondition(store.draft.hasPrefix("Who should I call?") && store.draft.contains("original thread thread-1"))
+        precondition(store.draft.contains(url) && requests.count == 2)
+        print("Passed direct result links, scoped follow-ups, terminal review and quiet history.")
     }
 
     @MainActor static func testRenderedTimer() throws {

@@ -378,6 +378,9 @@ private final class RenderedMessage {
         }
     }
 
+    private static let reportLinks = try! NSRegularExpression(
+        pattern: #"(?<![\w/])http://aurelius-mac-2:8700/output/raw/[0-9a-f]{12}(?=$|[\s),.\]>!?])"#)
+
     private static func inline(_ source: String, bold: Bool = false) -> NSAttributedString {
         let parsed = (try? AttributedString(markdown: source, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)))
             ?? AttributedString(source)
@@ -392,7 +395,14 @@ private final class RenderedMessage {
             var attributes: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: NSColor.labelColor]
             if let link = run.link { attributes[.link] = link }
             if intent.contains(.strikethrough) { attributes[.strikethroughStyle] = NSUnderlineStyle.single.rawValue }
-            text.append(NSAttributedString(string: String(parsed[run.range].characters), attributes: attributes))
+            let part = NSMutableAttributedString(string: String(parsed[run.range].characters), attributes: attributes)
+            if run.link == nil && !intent.contains(.code) {
+                for match in reportLinks.matches(in: part.string, range: NSRange(location: 0, length: part.length)) {
+                    let raw = (part.string as NSString).substring(with: match.range)
+                    if let url = URL(string: raw) { part.addAttribute(.link, value: url, range: match.range) }
+                }
+            }
+            text.append(part)
         }
         return text
     }

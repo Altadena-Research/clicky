@@ -45,6 +45,6 @@ swiftc "${compiler_options[@]}" -parse-as-library -target "$(uname -m)-apple-mac
 install -m 755 "$builddir/ClickyMeeting" "$destination/Contents/MacOS/ClickyMeeting"
 install -m 644 meeting/Info.plist "$destination/Contents/Info.plist"
 install -m 644 meeting/Resources/Marcus.png "$destination/Contents/Resources/Marcus.png"
-install -m 644 meeting/skill/{bridge,recordings,wispr_activity,chat_controls,meeting_activity}.py meeting/skill/stop_iterm.applescript "$destination/Contents/Resources/"
+install -m 644 meeting/skill/{bridge,recordings,wispr_activity,chat_controls,meeting_activity,meeting_feed}.py meeting/skill/{stop_iterm,review_terminal}.applescript "$destination/Contents/Resources/"
 codesign --force --sign - "$destination"
 printf 'Built %s\n' "$destination"

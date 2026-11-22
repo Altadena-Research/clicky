@@ -8,6 +8,6 @@
 <key>CFBundleShortVersionString</key><string>0.1</string>
 <key>CFBundleVersion</key><string>1</string>
 <key>LSMinimumSystemVersion</key><string>14.2</string>
-<key>NSAppleEventsUsageDescription</key><string>Send Stop to the iTerm2 tab running your selected Claude meeting.</string>
+<key>NSAppleEventsUsageDescription</key><string>Focus the paired meeting tab for review, or send Stop to its iTerm2 session when requested.</string>
 <key>LSUIElement</key><true/>
 </dict></plist>

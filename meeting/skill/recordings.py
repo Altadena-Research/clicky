@@ -58,10 +58,76 @@ def recordings():
                         changed = max(changed, path.stat().st_mtime)
                 changed = max(changed, timestamp_seconds(row["createdAt"]) or 0)
                 if time.time() - changed < 600:
-                    active[identifier] = (row["title"] or "Wispr meeting", segment)
+                    active[identifier] = (row["title"] or "Wispr meeting", segment, timestamp_seconds(row["endedAt"]) or 0)
             except (FileNotFoundError, ValueError, TypeError, AttributeError):
                 continue
         return active
+
+
+class TranscriptFreshness:
+    """Track only complete speech records in the selected recording segment."""
+    def __init__(self):
+        self.key = None
+        self.offset = 0
+        self.latest = None
+        self.has_speech = False
+        self.after_marker = False
+
+    def view(self, cursor, invitations):
+        meeting = cursor.get("meeting_id")
+        if not meeting or cursor.get("stopped"):
+            return None, None
+        if invitations.problem or not (DATA / "flow.sqlite").is_file():
+            return "Recording status unavailable", None
+        active = invitations.active.get(meeting)
+        if not active:
+            return "Recording inactive", None
+        _, segment, stopped_at = active
+        waiting = "Waiting for new speech" if segment else "Waiting for speech"
+        try:
+            path = DATA / "meetings" / str(uuid.UUID(meeting)) / "live.ndjson"
+            info = path.stat()
+            key = meeting, cursor.get("generation"), segment, info.st_dev, info.st_ino
+            replay = key != self.key or info.st_size < self.offset
+            if replay:
+                self.__init__()
+                self.key = key
+            if self.offset != info.st_size:
+                with path.open("rb") as stream:
+                    stream.seek(self.offset)
+                    for line in stream:
+                        if not line.endswith(b"\n"):
+                            break
+                        self.offset += len(line)
+                        try:
+                            row = json.loads(line)
+                        except (ValueError, UnicodeDecodeError):
+                            continue
+                        if not isinstance(row, dict):
+                            continue
+                        if row.get("marker") == "resumed":
+                            marker = timestamp_seconds(row.get("epochMs")) or 0
+                            self.after_marker = marker > stopped_at
+                            continue
+                        if not isinstance(row.get("text"), str) or not row["text"].strip():
+                            continue
+                        stamp = timestamp_seconds(row.get("endEpochMs") or row.get("startEpochMs") or row.get("timestamp"))
+                        if segment and ((stamp is not None and stamp <= stopped_at) or
+                                        (stamp is None and not self.after_marker)):
+                            continue
+                        self.has_speech = True
+                        if not replay:
+                            stamp = info.st_mtime
+                        if stamp is not None and 0 < stamp <= time.time() + 2:
+                            self.latest = max(self.latest or 0, stamp)
+        except FileNotFoundError:
+            self.key = None
+            return waiting, None
+        except (ValueError, TypeError, OSError):
+            return "Transcript status unavailable", None
+        if self.latest:
+            return "Last transcript update", self.latest
+        return ("Transcript available" if self.has_speech else waiting), None
 
 
 def read_object(path):
@@ -159,6 +225,32 @@ class Invitations:
         self.problem = None
         self.project = read_object(PREFERENCES / "project.json").get("path", str(HOME))
         self.restored = False
+        self.archive_version = -1
+        self.archives = {}
+
+    def past_sessions(self):
+        if self.archive_version == self.db.total_changes:
+            return self.archives
+        rows = self.db.execute("SELECT meeting, session, since FROM invitations WHERE status='opened' "
+                               "AND session IS NOT NULL ORDER BY since DESC").fetchall()
+        titles = {}
+        database = DATA / "flow.sqlite"
+        if rows and database.is_file():
+            with contextlib.suppress(sqlite3.Error), contextlib.closing(
+                    sqlite3.connect(database.as_uri() + "?mode=ro", uri=True, timeout=.4)) as db:
+                for meeting, _, _ in rows:
+                    title = db.execute("SELECT title FROM Meetings WHERE id=?", (meeting,)).fetchone()
+                    if title and title[0]:
+                        titles[meeting] = title[0]
+        self.archives = {}
+        for meeting, session, since in rows:
+            try:
+                ident = str(uuid.UUID(session))
+            except (TypeError, ValueError):
+                continue
+            self.archives.setdefault(ident, titles.get(meeting) or time.strftime("Meeting · %b %d", time.localtime(since)))
+        self.archive_version = self.db.total_changes
+        return self.archives
 
     def set_project(self, value):
         folder = Path(value).expanduser().resolve()
@@ -207,7 +299,7 @@ class Invitations:
                 self.next_selection = session
             saved[meeting] = status
         self.restored = True
-        for meeting, (title, segment) in self.active.items():
+        for meeting, (title, segment, _) in self.active.items():
             status = saved.get(meeting, "new")
             if status not in ("dismissed", "opened"):
                 return {"id": meeting, "title": title, "segment": segment, "status": status, "choices": self.choices.get((meeting, segment), {})}

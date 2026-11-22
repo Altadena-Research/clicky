@@ -56,6 +56,8 @@ class MeetingActivity:
         self.deadlines = {}
         self.directories = set()
         self.job_titles = {}
+        self.watched_jobs = {}
+        self.watch_calls = {}
         self.files = {}
         self.refresh_at = 0
         self.jobs = []
@@ -93,6 +95,11 @@ class MeetingActivity:
                     title = str(args.get("description") or "")[:160]
                     started = moment(when) or None
                     self.tools[block["id"]] = (name, title, started)
+                    command = args.get("command", "") if name == "Bash" else ""
+                    if "codex-companion.mjs" in command and re.search(r"\bstatus\b", command):
+                        jobs = set(re.findall(r"\btask-[a-z0-9]+-[a-z0-9]+\b", command))
+                        if len(jobs) == 1:
+                            self.watch_calls[block["id"]] = jobs.pop()
                     if name in ("Agent", "Task"):
                         self.tasks[block["id"]] = item(block["id"], "claudeAgent", title or "Claude agent",
                                                        "running", when, args.get("subagent_type"), started=started)
@@ -120,6 +127,9 @@ class MeetingActivity:
                 ident, kind, state = result.get("taskId"), "listener", "listening"
             elif name == "Bash":
                 ident, kind, state = result.get("backgroundTaskId"), "shell", "running"
+                watched = self.watch_calls.pop(call, None)
+                if watched and ident:
+                    self.watched_jobs[ident] = watched
                 launch = CODEX_LAUNCH.search(str(result.get("stdout") or "")[:2048])
                 if launch and title:
                     self.job_titles[launch[1]] = title
