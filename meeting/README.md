@@ -12,7 +12,7 @@ Paste text or a copied screenshot with **⌘V** or **Ctrl+V**. On macOS, **Contr
 
 Drag from any word in the conversation to a word in an earlier or later reply, then press **⌘C**. The copied text includes the speaker labels you highlighted along the way. The same drag works across paragraphs, lists, code, and tables.
 
-Click **Activity** beside the session name to inspect the paired terminal, Claude agents, background shells, listeners, and linked Codex jobs. Expand a row for its state, ID, and available thread or update details. Wide panels show activity beside the chat. Narrow panels show it in the transcript area and keep the composer available. Click **Close activity** to return.
+Click **Activity** beside the session name to inspect the paired terminal, Claude agents, background shells, listeners, and linked Codex jobs. Running rows show elapsed time beside their status. Completed work shows its final duration when both timestamps are available. Terminal and Codex subagent timers measure the current turn. Expand a row to see its start time, ID, and available thread or update details. Wide panels show activity beside the chat. Narrow panels show it in the transcript area and keep the composer available. Click **Close activity** to return.
 
 A count on Marcus shows running background agents and jobs. Clicking the count opens activity directly. The panel lists the main terminal, queued jobs, idle agents, and listeners separately. The local helper follows Claude’s task records, the Codex companion’s job registry, and descendant threads recorded for those jobs. **Unconfirmed** means those sources could not establish a current state.
 

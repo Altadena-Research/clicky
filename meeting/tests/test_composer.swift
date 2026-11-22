@@ -154,9 +154,30 @@ struct ComposerTests {
             MeetingWorkItem(id: kind, reference: kind, kind: kind, title: "Fixture", status: status,
                             updated: nil, detail: nil, thread: nil)
         }
+        let start = 1_790_000_000.0
+        func elapsed(_ item: MeetingWorkItem, _ seconds: Double) -> String? {
+            item.elapsed(at: Date(timeIntervalSince1970: start + seconds))
+        }
+        var timed = workItem("shell", "running")
+        precondition(!timed.hasLiveTimer && elapsed(timed, 65) == nil)
+        timed.startedAt = start
+        precondition(timed.hasLiveTimer && elapsed(timed, 0) == "0:00")
+        precondition(elapsed(timed, 279) == "4:39" && elapsed(timed, 3601) == "1:00:01")
+        precondition(elapsed(timed, -2) == nil)
+        var finished = workItem("shell", "completed")
+        finished.startedAt = start
+        precondition(elapsed(finished, 600) == nil)
+        finished.endedAt = start + 75.8
+        precondition(!finished.hasLiveTimer && elapsed(finished, 100) == "1:15" && elapsed(finished, 6000) == "1:15")
+        var unknown = workItem("shell", "unknown")
+        unknown.startedAt = start
+        precondition(!unknown.hasLiveTimer && elapsed(unknown, 150) == nil)
+        print("Passed live and frozen activity timers, hour formatting and missing timestamps.")
+        try testRenderedTimer()
+
         store.activityItems = [workItem("terminal", "running"), workItem("listener", "listening"),
-                               workItem("codexJob", "running"), workItem("claudeAgent", "running"),
-                               workItem("codexAgent", "idle"), workItem("shell", "queued")]
+                               timed, workItem("claudeAgent", "running"),
+                               workItem("codexAgent", "idle"), workItem("codexJob", "queued")]
         precondition(store.backgroundCount == 2)
         func buttonClick(at point: NSPoint) {
             func click(_ type: NSEvent.EventType) -> NSEvent {
@@ -210,6 +231,38 @@ struct ComposerTests {
         buttonClick(at: NSPoint(x: panel.contentLayoutRect.maxX - 29, y: 27))
         precondition(store.draft.isEmpty && store.waiting.last?.text == "I can keep typing")
         print("Passed compact queue disclosure, removal of a middle row, and submission from the still-active composer.")
+    }
+
+    @MainActor static func testRenderedTimer() throws {
+        let now = Date.now.timeIntervalSince1970
+        let live = MeetingWorkItem(id: "live", reference: "live", kind: "shell", title: "Running search",
+                                   status: "running", updated: nil, detail: nil, thread: nil, startedAt: now - 77)
+        let idle = MeetingWorkItem(id: "idle", reference: "idle", kind: "codexAgent", title: "Finished turn",
+                                   status: "idle", updated: nil, detail: nil, thread: nil, startedAt: now - 200, endedAt: now - 150)
+        let size = NSSize(width: 244, height: 260)
+        let host = NSHostingView(rootView: MeetingActivityInspector(items: [live, idle], close: {}))
+        let panel = NSPanel(contentRect: NSRect(origin: .zero, size: size), styleMask: [.nonactivatingPanel],
+                            backing: .buffered, defer: false)
+        host.sizingOptions = []
+        panel.contentView = host
+        panel.setContentSize(size)
+        panel.alphaValue = 0
+        panel.orderFront(nil)
+        defer { panel.orderOut(nil) }
+
+        func capture() throws -> NSBitmapImageRep {
+            host.layoutSubtreeIfNeeded()
+            guard let image = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { throw CocoaError(.coderInvalidValue) }
+            host.cacheDisplay(in: host.bounds, to: image)
+            return image
+        }
+        RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+        let before = try capture()
+        RunLoop.main.run(until: Date().addingTimeInterval(2.1))
+        let after = try capture()
+        precondition(before.representation(using: .png, properties: [:]) != after.representation(using: .png, properties: [:]),
+                     "The visible activity clock must advance without a new bridge snapshot")
+        print("Passed native activity drawer clock advancing between bridge updates.")
     }
 
     @MainActor static func testQueue(image: ChatImage, project: URL) throws {

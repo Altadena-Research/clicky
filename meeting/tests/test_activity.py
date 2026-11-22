@@ -56,6 +56,7 @@ class MeetingActivityTests(unittest.TestCase):
         metadata.write_text(json.dumps({"toolUseId": "aCall", "description": "Check layout", "finished": False}))
         rows = self.view()
         self.assertIn("a1", rows)
+        self.assertEqual(rows["a1"]["startedAt"], self.now.timestamp())
         self.assertNotIn("aCall", rows)
         self.append("user", [{"type": "tool_result", "tool_use_id": "aCall"}],
                     toolUseResult={"agentId": "a1", "isAsync": True})
@@ -73,6 +74,27 @@ class MeetingActivityTests(unittest.TestCase):
         rows = self.view()
         self.assertEqual([rows[k]["status"] for k in ("b1", "a1", "m1")], ["failed", "completed", "stopped"])
         self.assertEqual(self.tracker.snapshot(self.other, None, {}), [])
+
+    def test_elapsed_time_uses_launch_and_first_finish_across_reopens(self):
+        start = self.now.timestamp()
+        self.entry.update(status="busy", startedAt=(start - 300) * 1000, statusUpdatedAt=start * 1000)
+        self.append("assistant", [{"type": "tool_use", "id": "shellCall", "name": "Bash", "input": {}}])
+        self.stamp = (self.now + datetime.timedelta(seconds=2)).isoformat()
+        self.append("user", [{"type": "tool_result", "tool_use_id": "shellCall"}],
+                    toolUseResult={"backgroundTaskId": "shell1"})
+        self.launch("Monitor", {}, {"taskId": "listen1"})
+        rows = self.view()
+        self.assertEqual([rows[key]["startedAt"] for key in ("shell1", "listen1", self.session)], [start, start+2, start])
+        self.assertIsNone(rows["shell1"]["endedAt"])
+        for seconds, status in [(10, "running"), (65, "completed"), (80, "completed")]:
+            self.stamp = (self.now + datetime.timedelta(seconds=seconds)).isoformat()
+            self.append("user", f"<task-notification><task-id>shell1</task-id><status>{status}</status></task-notification>",
+                        origin={"kind": "task-notification"})
+        self.entry["status"] = "idle"
+        self.tracker = MeetingActivity(self.folder / "plugin", self.codex)
+        rows = self.view()
+        self.assertEqual((rows["shell1"]["startedAt"], rows["shell1"]["endedAt"]), (start, start+65))
+        self.assertIsNone(rows[self.session]["startedAt"])
 
     def test_registered_jobs_and_scoped_descendants(self):
         slug = self.folder.name + "-" + hashlib.sha256(os.fsencode(self.folder)).hexdigest()[:16]
@@ -100,12 +122,22 @@ class MeetingActivityTests(unittest.TestCase):
         self.assertEqual(rows["task-a-1"]["title"], "Research the design")
         self.assertEqual(rows["kid"]["status"], "running")
         self.assertNotIn("PRIVATE", str(rows))
+        self.assertIsNone(rows["task-a-1"]["startedAt"])  # Registry has only a queue creation time.
+        start = self.now.timestamp()
+        self.assertEqual(rows["kid"]["startedAt"], start)
+        self.stamp = (self.now + datetime.timedelta(seconds=90)).isoformat()
         event("task_complete")
         registry.write_text("{")
-        self.assertEqual(self.view()["kid"]["status"], "idle")
+        kid = self.view()["kid"]
+        self.assertEqual((kid["status"], kid["startedAt"], kid["endedAt"]), ("idle", start, start+90))
+        self.stamp = (self.now + datetime.timedelta(seconds=180)).isoformat()
+        event("task_started")
+        kid = self.view()["kid"]
+        self.assertEqual((kid["status"], kid["startedAt"], kid["endedAt"]), ("running", start+180, None))
         self.assertIn("task-a-1", self.view())
-        registry.write_text(json.dumps({"jobs": [dict(own, status="failed", completedAt=self.stamp)]}))
-        self.assertEqual(self.view()["task-a-1"]["status"], "failed")
+        registry.write_text(json.dumps({"jobs": [dict(own, status="failed", startedAt=self.now.isoformat(), completedAt=self.stamp)]}))
+        job = self.view()["task-a-1"]
+        self.assertEqual((job["status"], job["startedAt"], job["endedAt"]), ("failed", start, start+180))
 
     def test_expired_listener_and_partial_records(self):
         self.stamp = "2020-01-01T00:00:00Z"

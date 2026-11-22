@@ -57,7 +57,7 @@ The optional meeting build uses a pixel portrait of Marcus Aurelius as its float
 | `meeting/Resources/Marcus.png` | — | Transparent portrait displayed in the 48-point meeting character window |
 | `meeting/MeetingApp.swift` | 800 | Floating character, conversation, session selection and per-session message delivery |
 | `meeting/MeetingQueue.swift` | 70 | Queued message previews, attachment counts and expandable composer queue |
-| `meeting/MeetingActivity.swift` | 140 | Responsive activity drawer and expandable task details |
+| `meeting/MeetingActivity.swift` | 180 | Responsive activity drawer, live elapsed times and expandable task details |
 | `meeting/ReplyText.swift` | 400 | One selectable TextKit transcript with speaker labels, image thumbnails and resizable Markdown tables |
 | `meeting/ChatImages.swift` | 73 | Screenshot decoding, previews and session-scoped PNG copies |
 | `meeting/PanelResize.swift` | 65 | Native corner grip and saved conversation size |
@@ -65,14 +65,14 @@ The optional meeting build uses a pixel portrait of Marcus Aurelius as its float
 | `meeting/skill/recordings.py` | 265 | Detect local recordings, track invitations and open the matching Claude session |
 | `meeting/wispr-skill.patch` | 262 | Pairing requests, resume boundaries and a pinned watcher for the personal Wispr skill |
 | `meeting/skill/bridge.py` | 409 | Local transport, pinned listener and transcript filtering |
-| `meeting/skill/meeting_activity.py` | 335 | Session-scoped Claude task events, Codex job ownership and descendant thread activity |
+| `meeting/skill/meeting_activity.py` | 350 | Session-scoped Claude and Codex task states, ownership and recorded timing |
 | `meeting/skill/chat_controls.py`, `stop_iterm.applescript` | 120 | Claude activity and targeted terminal interruptions |
 | `meeting/skill/SKILL.md` | 15 | Attach the question monitor inside the running session |
 | `meeting/build.sh`, `meeting/Info.plist` | 50 | Build and bundle the meeting-only app using Command Line Tools |
 | `meeting/tests/test_bridge.py`, `test_recordings.py` | 240 | Synthetic transport and invitation regression tests |
 | `meeting/tests/test_resume.py` | 125 | Wispr resume detection, segment invitations and pinned monitoring |
-| `meeting/tests/test_activity.py` | 120 | Scoped activity lifecycle, incremental updates and child-thread attribution |
-| `meeting/tests/test_composer.swift` | 310 | Transcript selection, composer shortcuts, activity layout and multi-message queue regression tests |
+| `meeting/tests/test_activity.py` | 155 | Scoped activity lifecycle, recorded start and finish times, and child-thread attribution |
+| `meeting/tests/test_composer.swift` | 360 | Transcript selection, composer shortcuts, activity layout and timers, and multi-message queues |
 | `meeting/tests/test_replies.swift` | 73 | Table parsing, wrapping and horizontal scrolling in the reply view |
 | `meeting/tests/test_resize.swift` | 41 | Isolated AppKit resize regression test |
 

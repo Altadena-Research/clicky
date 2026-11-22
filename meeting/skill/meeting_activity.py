@@ -22,9 +22,10 @@ STATUS = re.compile(r"<status>([\w-]+)</status>")
 CODEX_LAUNCH = re.compile(r"^Codex [^\n]{1,70} started in the background as ([a-z]+-[a-z0-9-]+)\.", re.M)
 
 
-def item(identifier, kind, title, status, updated=None, detail=None, thread=None):
+def item(identifier, kind, title, status, updated=None, detail=None, thread=None, *, started=None, ended=None):
     return {"id": kind + ":" + identifier, "reference": identifier, "kind": kind, "title": title,
-            "status": status, "updated": updated, "detail": detail, "thread": thread}
+            "status": status, "updated": updated, "detail": detail, "thread": thread,
+            "startedAt": started, "endedAt": ended}
 
 
 def moment(value):
@@ -32,6 +33,12 @@ def moment(value):
         return datetime.datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
     except (ValueError, TypeError, AttributeError, OverflowError):
         return 0
+
+
+def update_task(task, status, when):
+    task.update(status=status, updated=when)
+    if status in FINISHED and task["endedAt"] is None:
+        task["endedAt"] = moment(when) or None
 
 
 class MeetingActivity:
@@ -71,8 +78,9 @@ class MeetingActivity:
                 status = STATUS.search(note[2].split("<summary>", 1)[0])
                 task = self.tasks[note[1]]
                 if status and status[1] in STATES:
-                    task["status"] = STATES[status[1]]
-                task["updated"] = when
+                    update_task(task, STATES[status[1]], when)
+                else:
+                    task["updated"] = when
         if not isinstance(content, list):
             return
         for block in content:
@@ -82,10 +90,12 @@ class MeetingActivity:
                 name = block.get("name")
                 if name in ("Agent", "Task", "Monitor", "Bash", "TaskStop"):
                     args = block.get("input") or {}
-                    self.tools[block["id"]] = (name, str(args.get("description") or "")[:160])
+                    title = str(args.get("description") or "")[:160]
+                    started = moment(when) or None
+                    self.tools[block["id"]] = (name, title, started)
                     if name in ("Agent", "Task"):
-                        self.tasks[block["id"]] = item(block["id"], "claudeAgent", self.tools[block["id"]][1] or "Claude agent",
-                                                       "running", when, args.get("subagent_type"))
+                        self.tasks[block["id"]] = item(block["id"], "claudeAgent", title or "Claude agent",
+                                                       "running", when, args.get("subagent_type"), started=started)
             if row.get("type") != "user" or block.get("type") != "tool_result":
                 continue
             tool = self.tools.get(block.get("tool_use_id"))
@@ -94,17 +104,17 @@ class MeetingActivity:
                 continue
             call = block.get("tool_use_id")
             if block.get("is_error") and call in self.tasks:
-                self.tasks[call].update(status="failed", updated=when)
+                update_task(self.tasks[call], "failed", when)
                 self.tools.pop(call, None)
                 continue
             if not isinstance(result, dict):
                 continue
             self.tools.pop(block.get("tool_use_id"), None)
-            name, title = tool
+            name, title, started = tool
             if name == "TaskStop":
                 task = self.tasks.get(result.get("task_id"))
                 if task and not block.get("is_error"):
-                    task.update(status="stopped", updated=when)
+                    update_task(task, "stopped", when)
                 continue
             if name == "Monitor":
                 ident, kind, state = result.get("taskId"), "listener", "listening"
@@ -119,10 +129,11 @@ class MeetingActivity:
                 if ident:
                     self.tasks.pop(call, None)
                 elif call in self.tasks:
-                    self.tasks[call].update(status=state, updated=when)
+                    update_task(self.tasks[call], state, when)
             if isinstance(ident, str) and ident:
                 self.tasks[ident] = item(ident, kind, title or {"listener": "Monitor", "shell": "Background command",
-                                         "claudeAgent": "Claude agent"}[kind], state, when)
+                                         "claudeAgent": "Claude agent"}[kind], state, when, started=started,
+                                         ended=(moment(when) or None) if state in FINISHED else None)
                 timeout = result.get("timeoutMs")
                 if kind == "listener" and isinstance(timeout, (int, float)) and timeout > 0:
                     self.deadlines[ident] = moment(when) + timeout / 1000
@@ -171,7 +182,8 @@ class MeetingActivity:
                     elif data.get("finished") is False or data.get("toolUseId") in self.tools:
                         status = "running"
                 result.append(item(ident, "claudeAgent", data.get("description") or recorded.get("title") or "Claude agent",
-                                   status, recorded.get("updated"), data.get("agentType")))
+                                   status, recorded.get("updated"), data.get("agentType"),
+                                   started=recorded.get("startedAt"), ended=recorded.get("endedAt")))
             except (OSError, ValueError, AttributeError):
                 continue
         return result
@@ -226,7 +238,8 @@ class MeetingActivity:
             # The summary can contain the memo itself. Use the launch description or the job's label.
             title = self.job_titles.get(ident) or job.get("title") or "Codex job"
             detail = " · ".join(x for x in (Path(job.get("workspaceRoot") or "").name, job.get("phase")) if x)
-            found[ident] = item(ident, "codexJob", title, status, job.get("updatedAt"), detail, job.get("threadId"))
+            found[ident] = item(ident, "codexJob", title, status, job.get("updatedAt"), detail, job.get("threadId"),
+                                started=moment(job.get("startedAt")) or None, ended=moment(job.get("completedAt")) or None)
             if job.get("threadId"):
                 start = moment(job.get("startedAt") or job.get("createdAt"))
                 end = float("inf") if status in ("queued", "running") else moment(job.get("completedAt") or job.get("updatedAt"))
@@ -260,27 +273,27 @@ class MeetingActivity:
                             continue
                         seen.add(ident)
                         pending.append(ident)
-                        state, updated = self.child_state(rollout, edge)
-                        children.append(item(ident, "codexAgent", nickname or role or "Codex subagent", state, updated,
-                                             "Parent thread " + parent, ident))
+                        state, updated, started = self.child_state(rollout)
+                        ended = (moment(updated) or None) if state in ("idle", "stopped") else None
+                        children.append(item(ident, "codexAgent", nickname or role or "Codex subagent",
+                                             "completed" if edge == "closed" else state, updated,
+                                             "Parent thread " + parent, ident, started=started, ended=ended))
         except (sqlite3.Error, OSError):
             pass
         return children
 
-    def child_state(self, rollout, edge):
-        if edge == "closed":
-            return "completed", None
+    def child_state(self, rollout):
         # An open edge can belong to an idle agent. Only an actual turn event supplies working/idle.
         try:
             file = Path(rollout).resolve()
             if not any((self.codex_home / top).resolve() in file.parents for top in ("sessions", "archived_sessions")):
-                return "unknown", None
+                return "unknown", None, None
             stat = file.stat()
-            inode, offset, state, when = self.turns.get(file, (stat.st_ino, 0, "unknown", None))
+            inode, offset, state, when, started = self.turns.get(file, (stat.st_ino, 0, "unknown", None, None))
             if inode != stat.st_ino or offset > stat.st_size:
-                offset, state, when = 0, "unknown", None
+                offset, state, when, started = 0, "unknown", None, None
             if stat.st_size == offset:
-                return state, when
+                return state, when, started
             with file.open("rb") as stream:
                 stream.seek(offset)
                 for line in stream:
@@ -299,11 +312,13 @@ class MeetingActivity:
                         (row.get("payload") or {}).get("type"))
                     if row.get("type") == "event_msg" and next_state:
                         state, when = next_state, row.get("timestamp")
-            self.turns[file] = (stat.st_ino, offset, state, when)
-            return state, when
+                        if state == "running":
+                            started = moment(when) or None
+            self.turns[file] = (stat.st_ino, offset, state, when, started)
+            return state, when, started
         except (OSError, TypeError, ValueError):
             pass
-        return "unknown", None
+        return "unknown", None, None
 
     def snapshot(self, session, log, entry):
         if not session:
@@ -330,5 +345,8 @@ class MeetingActivity:
         if entry.get("kind") == "interactive" and entry.get("sessionId") == session:
             term = item(session, "terminal", "Claude Code", {"working": "running", "ready": "idle", "attention": "waiting"}.get(phase(entry), "unknown"),
                         None, entry.get("tmux") or "Paired terminal")
+            changed = entry.get("statusUpdatedAt")
+            if term["status"] == "running" and isinstance(changed, (int, float)) and changed > 0:
+                term["startedAt"] = changed / 1000
             items[term["id"]] = term
         return sorted(items.values(), key=lambda row: (str(row["updated"] or ""), row["id"]), reverse=True)
