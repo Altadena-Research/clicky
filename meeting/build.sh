@@ -24,7 +24,7 @@ PYMAP
 fi
 if [[ "${1:-}" == "--test-composer" ]]; then
     swiftc "${compiler_options[@]}" -DTEST_COMPOSER -parse-as-library -target "$(uname -m)-apple-macosx14.2" \
-        meeting/{MeetingApp,PanelResize,ChatImages,ReplyText,MeetingActivity}.swift meeting/tests/test_composer.swift -o "$builddir/test-composer"
+        meeting/{MeetingApp,PanelResize,ChatImages,ReplyText,MeetingActivity,MeetingQueue}.swift meeting/tests/test_composer.swift -o "$builddir/test-composer"
     "$builddir/test-composer"
     exit
 fi
@@ -41,7 +41,7 @@ if [[ "${1:-}" == "--test-resize" ]]; then
 fi
 mkdir -p "$destination/Contents/MacOS" "$destination/Contents/Resources"
 swiftc "${compiler_options[@]}" -parse-as-library -target "$(uname -m)-apple-macosx14.2" -O \
-    meeting/{MeetingApp,PanelResize,ChatImages,ReplyText,MeetingActivity}.swift -o "$builddir/ClickyMeeting"
+    meeting/{MeetingApp,PanelResize,ChatImages,ReplyText,MeetingActivity,MeetingQueue}.swift -o "$builddir/ClickyMeeting"
 install -m 755 "$builddir/ClickyMeeting" "$destination/Contents/MacOS/ClickyMeeting"
 install -m 644 meeting/Info.plist "$destination/Contents/Info.plist"
 install -m 644 meeting/Resources/Marcus.png "$destination/Contents/Resources/Marcus.png"

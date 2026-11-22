@@ -317,11 +317,12 @@ def ui():
                             stops[selected] = time.monotonic()
                         except (ValueError, OSError, subprocess.SubprocessError) as error:
                             emit({"type": "error", "message": str(error)})
-                if (activity not in ("working", "attention") and (answered or flight.get("started"))):
+                if (activity not in ("working", "attention") and answered) or (activity == "ready" and flight.get("started")):
                     flights.pop(selected, None)
                 elif time.monotonic() - flight["since"] > 90 and seen is None:
                     flights.pop(selected, None)
-                    emit({"type": "error", "message": "Claude has not acknowledged this message. Check the paired terminal."})
+                    emit({"type": "error", "session": selected, "pauseQueue": True,
+                          "message": "Claude hasn’t acknowledged the last message. Check the terminal before resuming."})
                 elif flight.get("cancel"):
                     activity = "stopping"
                 elif activity in ("ready", "unknown") and not answered:
@@ -363,8 +364,11 @@ def ui():
                 if b"\n" not in incoming:
                     continue
             line, _, incoming = incoming.partition(b"\n")
+            reply_to = {}
             try:
                 request = json.loads(line)
+                if request.get("op") == "ask":
+                    reply_to = {"session": request.get("session"), "requestID": request.get("requestID")}
                 if request["op"] == "project":
                     invitations.set_project(request["path"])
                     continue
@@ -398,6 +402,11 @@ def ui():
                         question = (question or "Describe the attached image.") + IMAGE_NOTE + "\n".join(files)
                     if len(question) > MAX_QUESTION:
                         raise ValueError("Shorten the message to make room for its image references.")
+                    # A turn can start after the app's last status update.
+                    if requested in flights or requested in stops or phase(registry.entry(requested)) in ("working", "attention"):
+                        emit({"type": "deferred", **reply_to})
+                        previous = None
+                        continue
                     timestamp = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
                     result = send(selected, question)
                     if not result.get("ok"):
@@ -407,9 +416,13 @@ def ui():
                         history.append(chat_message(result["id"], question, selected, timestamp, folder))
                         flights[selected] = {"id": result["id"], "since": time.monotonic()}
                         del history[:-40]
-                    emit({"type": "sent", "session": selected})
+                    emit({"type": "sent", **reply_to})
+                    if not result.get("id"):
+                        emit({"type": "error", "session": selected, "pauseQueue": True,
+                              "message": "This listener can’t track replies. Resume after Claude finishes."})
+                    previous = None
             except (ValueError, OSError, KeyError, subprocess.SubprocessError) as error:
-                emit({"type": "error", "message": str(error)})
+                emit({"type": "error", "message": str(error), **reply_to})
 
 
 if __name__ == "__main__":

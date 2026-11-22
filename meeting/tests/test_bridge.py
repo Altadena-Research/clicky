@@ -37,7 +37,7 @@ class MeetingBridgeTests(unittest.TestCase):
 
     def process(self, *args):
         proc = subprocess.Popen([sys.executable, "-B", "-u", str(BRIDGE), *args],
-                                env=self.env, cwd=self.folder, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                                env=self.env, cwd=self.folder, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0)
         def finish():
             if proc.poll() is None:
                 proc.terminate()
@@ -156,6 +156,53 @@ class MeetingBridgeTests(unittest.TestCase):
         self.assertEqual((earlier["text"], earlier["images"]), ("Earlier", [str(legacy)]))
         self.command(ui, op="stop", session=self.other)
         self.assertEqual(self.read(ui)["type"], "error")
+
+    def test_queued_delivery_obeys_terminal_turns(self):
+        listener = self.listen()
+        sessions = self.config / "sessions"
+        sessions.mkdir()
+        status = sessions / (str(os.getpid()) + ".json")
+        def set_status(value):
+            status.write_text(json.dumps({"pid": os.getpid(), "sessionId": self.session, "status": value}))
+
+        set_status("idle")
+        ui = self.process("ui")
+        self.read(ui)
+        self.command(ui, op="select", session=self.session)
+        self.assertEqual(self.read(ui)["activity"], "ready")
+        first = {"op": "ask", "session": self.session, "requestID": str(uuid.uuid4()), "question": "First"}
+        second = dict(first, requestID=str(uuid.uuid4()), question="Second")
+        self.command(ui, **first)
+        ack = self.read(ui)
+        self.assertEqual((ack["type"], ack["requestID"]), ("sent", first["requestID"]))
+        event = self.read(listener)
+        self.assertEqual(event["question"], "First")
+        self.assertEqual(self.read(ui)["activity"], "sent")
+        self.command(ui, **second)
+        ack = self.read(ui)
+        self.assertEqual((ack["type"], ack["requestID"]), ("deferred", second["requestID"]))
+        self.assertEqual(self.read(ui)["activity"], "sent")
+        self.assertFalse(select.select([listener.stdout], [], [], 0)[0])
+
+        set_status("busy")
+        text = ('<summary>Monitor event: "Questions typed in Clicky Meeting"</summary><event>' +
+                json.dumps(event) + '</event>')
+        rows = [{"type": "user", "origin": {"kind": "task-notification"}, "message": {"content": text}},
+                {"type": "assistant", "message": {"content": [{"type": "text", "text": "Received."}]}}]
+        log = self.project / (self.session + ".jsonl")
+        log.write_text("".join(json.dumps(dict(row, uuid=str(uuid.uuid4()), sessionId=self.session,
+                                              timestamp="2026-01-01T00:00:00Z")) + "\n" for row in rows))
+        self.assertEqual(self.read(ui)["activity"], "working")
+        self.command(ui, **second)
+        self.assertEqual(self.read(ui)["type"], "deferred")
+        self.assertEqual(self.read(ui)["activity"], "working")
+        self.assertFalse(select.select([listener.stdout], [], [], 0)[0])
+        set_status("idle")
+        self.assertEqual(self.read(ui)["activity"], "ready")
+        self.command(ui, **second)
+        ack = self.read(ui)
+        self.assertEqual((ack["type"], ack["requestID"]), ("sent", second["requestID"]))
+        self.assertEqual(self.read(listener)["question"], "Second")
 
     def test_duplicate_and_unpaired_listeners(self):
         self.listen()

@@ -16,7 +16,9 @@ Click **Activity** beside the session name to inspect the paired terminal, Claud
 
 A count on Marcus shows running background agents and jobs. Clicking the count opens activity directly. The panel lists the main terminal, queued jobs, idle agents, and listeners separately. The local helper follows Claude’s task records, the Codex companion’s job registry, and descendant threads recorded for those jobs. **Unconfirmed** means those sources could not establish a current state.
 
-The composer distinguishes a message waiting for Claude from a running turn. Sending a follow-up while Claude is working queues it in the current composer. **Ctrl+C** or the square **Stop** button cancels that queued send and keeps the draft. During a reply it requests an interruption in the paired terminal. Clicky waits for Claude’s status to settle.
+Press **Return** for each follow-up, even while Claude is working. Each message keeps its own attachments and clears the input for the next one. Click **2 queued** (or the current count) above the composer to see the send order. Use **×** beside any waiting message to remove it. With an empty composer, **Ctrl+C** brings the newest waiting message back for editing. The square **Stop** button interrupts the current reply. With no waiting messages, **Ctrl+C** also stops the current reply.
+
+Marcus sends one message per turn to the selected conversation. You can collapse the panel and let it continue. Switching sessions holds the first session’s queue until you return. If delivery fails or the connection drops, check the paired terminal and use **Resume queue** when ready. Waiting messages stay in app memory until you quit.
 
 When tmux is installed, new Clicky conversations use a dedicated tmux pane inside the normal terminal window. Existing iTerm2 sessions can receive Stop through macOS Automation. If macOS declines the request or the terminal host does not support targeted input, press **Esc** in the Claude terminal.
 

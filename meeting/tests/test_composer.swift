@@ -61,9 +61,11 @@ struct ComposerTests {
         precondition(press("v", .control) && store.draft == "paste\ntext")
         store.activity = "working"
         store.ask()
-        precondition(store.queued && store.canStop && store.activityLabel == "Message queued")
-        precondition(press("c", .control) && !store.queued && store.images.count == 2 && store.hasDraft)
+        precondition(store.waiting.count == 1 && store.canStop && !store.hasDraft && store.activityLabel == "Claude is working…")
+        precondition(press("c", .control) && store.waiting.isEmpty && store.images.count == 2 && store.hasDraft)
         print("Passed screenshot and text paste, image-only draft, and Ctrl+C cancelling queued input.")
+
+        try testQueue(image: image, project: project)
 
         store.activity = "ready"
         let source = "## Notes\nFirst **review** today.\n```text\nAlpha section\n  Beta section\n```\nThen discuss."
@@ -188,5 +190,115 @@ struct ComposerTests {
         precondition(!store.showingActivity)
         precondition(setWidth(380) > 260 && store.draft == "paste\ntext")
         print("Passed working count and wide and compact activity drawers, with the composer draft preserved.")
+
+        store.activity = "working"
+        store.images = []
+        for text in ["Keep this first", "Remove this second", "Keep this third"] {
+            store.draft = text
+            store.ask()
+        }
+        store.draft = "I can keep typing"
+        panel.setContentSize(MeetingPanelSize.minimum)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        host.layoutSubtreeIfNeeded()
+        let collapsedHeight = transcriptScroll.bounds.height
+        buttonClick(at: NSPoint(x: 46, y: 62))
+        precondition(transcriptScroll.bounds.height < collapsedHeight - 55)
+        buttonClick(at: NSPoint(x: panel.contentLayoutRect.maxX - 27, y: 85))
+        precondition(store.waiting.map(\.text) == ["Keep this first", "Keep this third"])
+        precondition(store.draft == "I can keep typing")
+        buttonClick(at: NSPoint(x: panel.contentLayoutRect.maxX - 29, y: 27))
+        precondition(store.draft.isEmpty && store.waiting.last?.text == "I can keep typing")
+        print("Passed compact queue disclosure, removal of a middle row, and submission from the still-active composer.")
+    }
+
+    @MainActor static func testQueue(image: ChatImage, project: URL) throws {
+        var writes: [[String: Any]] = []
+        let store = MeetingStore { writes.append($0) }
+        let a = UUID().uuidString.lowercased(), b = UUID().uuidString.lowercased()
+        func event(_ values: [String: Any]) throws {
+            var line = try JSONSerialization.data(withJSONObject: values)
+            line.append(10)
+            store.receive(line)
+        }
+        func view(_ session: String, _ activity: String, connected: Bool = true) throws {
+            try event(["type": "view", "sessions": [a, b], "selected": session, "connected": connected,
+                       "attachmentFolder": project.appendingPathComponent(".clicky-attachments/" + session).path,
+                       "activity": activity])
+        }
+        func reply(_ type: String, to request: [String: Any]) throws {
+            try event(["type": type, "session": request["session"]!, "requestID": request["requestID"]!,
+                       "message": "Check delivery before retrying."])
+        }
+        func submit(_ text: String) {
+            store.draft = text
+            precondition(store.canSend)
+            store.ask()
+            precondition(!store.hasDraft)
+        }
+        try view(a, "working")
+        submit("First")
+        submit("Remove me")
+        store.attach([image])
+        submit("")
+        submit("Third")
+        precondition(writes.isEmpty && store.waiting.count == 4)
+        store.removeQueued(store.waiting[1].id)
+        store.draft = "Unfinished"
+        try view(b, "ready")
+        precondition(writes.isEmpty && store.waiting.isEmpty && !store.hasDraft)
+        try view(a, "ready")
+        precondition(writes.count == 1 && store.draft == "Unfinished")
+        precondition(writes[0]["question"] as? String == "First")
+        precondition(store.waiting.map(\.preview) == ["Image", "Third"])
+        submit("Fourth")
+        store.ask() // Repeated Return on an empty composer.
+        try view(a, "ready") // An update already in the pipe before the acknowledgment.
+        precondition(writes.count == 1)
+        try reply("sent", to: writes[0])
+        try reply("sent", to: writes[0])
+        submit("Fifth")
+        try view(a, "sent")
+        try view(a, "attention")
+        try view(a, "stopping")
+        precondition(writes.count == 1)
+        try view(a, "ready")
+        precondition(writes.count == 2 && writes[1]["images"] as? [String] == [image.id])
+        precondition(FileManager.default.fileExists(atPath:
+            project.appendingPathComponent(".clicky-attachments/" + a + "/" + image.id + ".png").path))
+        try reply("deferred", to: writes[1])
+        precondition(store.waiting.map(\.preview) == ["Image", "Third", "Fourth", "Fifth"])
+        try view(a, "working")
+        try view(a, "ready")
+        precondition(writes.count == 3 && writes[1]["requestID"] as? String == writes[2]["requestID"] as? String)
+        try view(b, "ready")
+        submit("Other session")
+        try reply("sent", to: writes[2])
+        precondition(writes.count == 4 && writes[3]["session"] as? String == b && store.activityLabel == "Sending…")
+        try reply("sent", to: writes[3])
+        try view(a, "unknown", connected: false)
+        try view(a, "ready")
+        precondition(writes.count == 4 && store.queueProblem != nil)
+        store.resumeQueue()
+        precondition(writes.count == 5 && writes.last?["question"] as? String == "Third")
+        try reply("error", to: writes[4])
+        try view(a, "ready")
+        store.draft = "Still editing"
+        store.interruptFromKeyboard()
+        precondition(store.draft == "Still editing" && store.waiting.count == 3 && writes.count == 5)
+        store.removeQueued(store.waiting[0].id)
+        store.resumeQueue()
+        precondition(writes.count == 6 && writes[5]["question"] as? String == "Fourth")
+        try reply("sent", to: writes[5])
+        try view(a, "working")
+        try event(["type": "error", "session": a, "pauseQueue": true, "message": "Acknowledgment timed out."])
+        try view(a, "ready")
+        precondition(store.waiting.map(\.text) == ["Fifth"] && store.queueProblem != nil && writes.count == 6)
+        store.resumeQueue()
+        precondition(writes.count == 7 && writes[6]["question"] as? String == "Fifth")
+        try reply("sent", to: writes[6])
+        try view(a, "ready")
+        precondition(store.waiting.isEmpty && store.draft == "Still editing" && writes.count == 7)
+        print("Passed FIFO delivery, rapid Return, image ownership, per-item cancellation, session switching and recovery.")
     }
 }

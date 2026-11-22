@@ -12,6 +12,8 @@ struct Invitation: Decodable, Equatable {
 
 private struct BridgeEvent: Decodable {
     let type: String
+    let requestID: UUID?
+    let pauseQueue: Bool?
     let activity: String?
     let activityItems: [MeetingWorkItem]?
     let sessions: [String]?
@@ -44,16 +46,28 @@ final class MeetingStore: ObservableObject {
     @Published var showingActivity = false
     var backgroundCount: Int { activityItems.filter(\.isWorking).count }
     var backgroundCountChanged: ((Int) -> Void)?
-    @Published var queued = false
-    private var submittedImages: [String] = []
+    @Published private var queues: [String: [QueuedQuestion]] = [:]
+    @Published private var dispatching: [String: UUID] = [:]
+    @Published private var queueProblems: [String: String] = [:]
+    private let requestWriter: (([String: Any]) throws -> Void)?
+    private var queue: [QueuedQuestion] { selected.flatMap { queues[$0] } ?? [] }
+    private var sending: Bool { selected.flatMap { dispatching[$0] } != nil }
+    var waiting: [QueuedQuestion] { sending ? Array(queue.dropFirst()) : queue }
+    var queueProblem: String? { selected.flatMap { queueProblems[$0] } }
+    var willQueue: Bool { sending || !queue.isEmpty || queueProblem != nil || !availableForQuestion }
+    private var availableForQuestion: Bool { activity == "ready" || activity == "unknown" }
+
+    init(requestWriter: (([String: Any]) throws -> Void)? = nil) {
+        self.requestWriter = requestWriter
+    }
+
     private var attachmentFolder: String?
     private var drafts: [String: (String, [ChatImage])] = [:]
     var busy: Bool { activity == "working" || activity == "attention" }
     var hasDraft: Bool { !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !images.isEmpty }
-    var canStop: Bool { connected && (queued || sending || busy || activity == "sent") }
-    var canSend: Bool { connected && hasDraft && !queued && !sending && activity != "stopping" && activity != "sent" }
+    var canStop: Bool { connected && (sending || busy || activity == "sent") }
+    var canSend: Bool { connected && selected != nil && hasDraft }
     var activityLabel: String? {
-        if queued { return "Message queued" }
         if sending { return "Sending…" }
         switch activity {
         case "working": return "Claude is working…"
@@ -63,7 +77,6 @@ final class MeetingStore: ObservableObject {
         default: return nil
         }
     }
-    @Published var sending = false
     @Published var error: String?
     @Published var invitation: Invitation?
     @Published var project = ""
@@ -79,7 +92,6 @@ final class MeetingStore: ObservableObject {
     private var requestedSelection: String?
     private var previousAssistant: String?
     private var loadedSelection: String?
-    private var submitted = ""
 
     func start() {
         guard let bridge = Bundle.main.url(forResource: "bridge", withExtension: "py") else {
@@ -98,10 +110,14 @@ final class MeetingStore: ObservableObject {
         }
         child.terminationHandler = { [weak self] _ in
             DispatchQueue.main.async {
-                self?.connected = false
-                self?.activityItems = []
-                self?.sending = false
-                self?.error = "The local helper exited. Reopen Clicky Meeting to reconnect."
+                guard let self else { return }
+                self.connected = false
+                self.activityItems = []
+                for session in self.dispatching.keys {
+                    self.queueProblems[session] = "Delivery is uncertain. Check the paired terminal."
+                }
+                self.dispatching.removeAll()
+                self.error = "The local helper exited. Reopen Clicky Meeting to reconnect."
             }
         }
         do {
@@ -149,14 +165,14 @@ final class MeetingStore: ObservableObject {
     }
 
     func attach(_ additions: [ChatImage]) {
-        guard connected, !queued, !sending else { return }
+        guard connected else { return }
         guard images.count + additions.count <= 4 else { error = "Attach up to four images per message."; return }
         images.append(contentsOf: additions)
         error = nil
     }
 
     func attachFiles(_ urls: [URL]) -> Bool {
-        guard connected, !queued, !sending, !urls.isEmpty else { return false }
+        guard connected, !urls.isEmpty else { return false }
         do { attach(try urls.prefix(5).map(ChatImage.init(url:))) }
         catch { self.error = error.localizedDescription; return false }
         return true
@@ -174,7 +190,7 @@ final class MeetingStore: ObservableObject {
     }
 
     func pasteImages(from board: NSPasteboard) -> Bool {
-        guard connected, !queued, !sending else { return false }
+        guard connected else { return false }
         do {
             let additions = try ChatImage.fromPasteboard(board)
             if additions.isEmpty { return false }
@@ -184,60 +200,104 @@ final class MeetingStore: ObservableObject {
     }
 
     func stopReply() {
-        if queued { queued = false; return }
         guard let selected, canStop else { return }
         write(["op": "stop", "session": selected])
     }
 
-    func ask() {
-        guard canSend, let selected else { return }
-        let question = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard question.count <= 4000 else { error = "Keep the question under 4,001 characters."; return }
-        if busy { queued = true; return }
-        do {
-            for image in images { try image.save(for: selected, in: attachmentFolder) }
-        } catch { self.error = error.localizedDescription; return }
-        sending = true
-        submitted = draft
-        submittedImages = images.map(\.id)
-        error = nil
-        write(["op": "ask", "session": selected, "question": question, "images": submittedImages])
+    func interruptFromKeyboard() {
+        guard let last = waiting.last else { stopReply(); return }
+        guard draft.isEmpty && images.isEmpty else {
+            error = "Expand the queue to remove a message while keeping your draft."
+            return
+        }
+        draft = last.text
+        images = last.images
+        removeQueued(last.id)
     }
 
-    private func write(_ request: [String: Any]) {
+    func ask() {
+        guard canSend, let selected else { return }
+        guard draft.trimmingCharacters(in: .whitespacesAndNewlines).count <= 4000 else {
+            error = "Keep the question under 4,001 characters."
+            return
+        }
+        queues[selected, default: []].append(QueuedQuestion(text: draft, images: images))
+        draft = ""
+        images = []
+        error = nil
+        dispatchNext()
+    }
+
+    func removeQueued(_ id: UUID) {
+        guard let selected, waiting.contains(where: { $0.id == id }) else { return }
+        queues[selected]?.removeAll { $0.id == id }
+        if queues[selected]?.isEmpty == true { queueProblems[selected] = nil }
+        error = nil
+    }
+
+    func resumeQueue() {
+        guard connected, let selected else { return }
+        queueProblems[selected] = nil
+        dispatchNext()
+    }
+
+    private func dispatchNext() {
+        guard connected, let selected, availableForQuestion, !sending, queueProblem == nil,
+              let item = queue.first else { return }
         do {
-            guard process?.isRunning == true else { throw CocoaError(.fileWriteUnknown) }
-            var bytes = try JSONSerialization.data(withJSONObject: request)
-            bytes.append(10)
-            try input.fileHandleForWriting.write(contentsOf: bytes)
+            for image in item.images { try image.save(for: selected, in: attachmentFolder) }
+            dispatching[selected] = item.id
+            try deliver(["op": "ask", "session": selected, "requestID": item.id.uuidString,
+                         "question": item.text.trimmingCharacters(in: .whitespacesAndNewlines),
+                         "images": item.images.map(\.id)])
         } catch {
-            self.error = "Couldn’t reach the local meeting helper."
-            sending = false
+            dispatching[selected] = nil
+            queueProblems[selected] = error.localizedDescription
         }
     }
 
-    private func receive(_ bytes: Data) {
+    private func deliver(_ request: [String: Any]) throws {
+        if let requestWriter { try requestWriter(request); return }
+        guard process?.isRunning == true else { throw CocoaError(.fileWriteUnknown) }
+        var bytes = try JSONSerialization.data(withJSONObject: request)
+        bytes.append(10)
+        try input.fileHandleForWriting.write(contentsOf: bytes)
+    }
+
+    private func write(_ request: [String: Any]) {
+        do { try deliver(request) }
+        catch { self.error = "Couldn’t reach the local meeting helper." }
+    }
+
+    func receive(_ bytes: Data) {
         received.append(bytes)
         while let end = received.firstIndex(of: 10) {
             let line = received[..<end]
             let event = try? JSONDecoder().decode(BridgeEvent.self, from: line)
             received.removeSubrange(...end)
             guard let event else { continue }
-            if event.type == "error" {
-                error = event.message
-                sending = false
+            if let session = event.session, let id = event.requestID,
+               dispatching[session] == id, queues[session]?.first?.id == id {
+                dispatching[session] = nil
+                switch event.type {
+                case "sent":
+                    queues[session]?.removeFirst()
+                    // The bridge emits a fresh view after every acknowledgment.
+                    if selected == session { activity = "sent" }
+                case "deferred":
+                    if selected == session { activity = "working" }
+                default:
+                    queueProblems[session] = (event.message ?? "Delivery failed.") + " Check the terminal before retrying."
+                }
+            } else if event.type == "error" {
+                if event.pauseQueue == true, let session = event.session {
+                    queueProblems[session] = event.message
+                } else {
+                    error = event.message
+                }
             } else if event.type == "opened" {
                 error = nil
                 opened?()
-            } else if event.type == "sent" {
-                if selected == event.session {
-                    if draft == submitted { draft = "" }
-                    images.removeAll { submittedImages.contains($0.id) }
-                } else if let session = event.session, let saved = drafts[session] {
-                    drafts[session] = (saved.0 == submitted ? "" : saved.0,
-                                       saved.1.filter { !submittedImages.contains($0.id) })
-                }
-                sending = false
             } else if event.type == "view" {
                 project = event.project ?? ""
                 resumeStatus = event.resumeStatus
@@ -253,7 +313,6 @@ final class MeetingStore: ObservableObject {
                     let restored = event.selected.flatMap { drafts.removeValue(forKey: $0) }
                     draft = restored?.0 ?? ""
                     images = restored?.1 ?? []
-                    queued = false
                 }
                 selected = event.selected
                 attachmentFolder = event.attachmentFolder
@@ -261,8 +320,10 @@ final class MeetingStore: ObservableObject {
                 let items = connected ? event.activityItems ?? [] : []
                 if items != activityItems { activityItems = items }
                 activity = event.activity ?? "unknown"
-                if !connected { queued = false }
-                if queued && activity == "ready" { queued = false; ask() }
+                if !connected, let selected, !queue.isEmpty, queueProblem == nil {
+                    queueProblems[selected] = "Session disconnected. Resume when you’re ready."
+                }
+                dispatchNext()
                 messages = event.messages ?? []
                 let assistant = messages.last { $0.role == "assistant" }
                 if let assistant, let selected, loadedSelection == selected,
@@ -390,6 +451,9 @@ struct MeetingView: View {
                     Spacer()
                 }
             }
+            if !store.waiting.isEmpty || store.queueProblem != nil {
+                MeetingQueueView(store: store).id(store.selected)
+            }
             if !store.images.isEmpty {
                 HStack(spacing: 8) {
                     ForEach(store.images) { image in
@@ -399,7 +463,6 @@ struct MeetingView: View {
                                 Image(systemName: "xmark.circle.fill").symbolRenderingMode(.palette)
                                     .foregroundStyle(.white, .black)
                             }.buttonStyle(.plain).help("Remove image").accessibilityLabel("Remove image")
-                                .disabled(store.queued || store.sending)
                         }
                     }
                     Spacer()
@@ -408,7 +471,7 @@ struct MeetingView: View {
             HStack(alignment: .center, spacing: 8) {
                 Button(action: store.pickImages) { Image(systemName: "paperclip") }
                     .buttonStyle(.plain).help("Attach images").accessibilityLabel("Attach images")
-                    .disabled(!store.connected || store.queued || store.sending)
+                    .disabled(!store.connected)
                     .onHover { $0 ? NSCursor.pointingHand.set() : NSCursor.arrow.set() }
                 TextField("Ask about this meeting…", text: $store.draft, axis: .vertical)
                     .lineLimit(1...4).textFieldStyle(.plain).focused($typing)
@@ -417,17 +480,17 @@ struct MeetingView: View {
                         store.ask()
                         return .handled
                     }
-                    .disabled(!store.connected || store.queued || store.sending)
+                    .disabled(!store.connected)
                 if store.canStop || store.activity == "stopping" {
                     Button(action: store.stopReply) { Image(systemName: "stop.circle.fill").font(.title2) }
-                        .buttonStyle(.plain).help(store.queued ? "Cancel queued message (Ctrl+C)" : "Stop reply (Ctrl+C)")
-                        .accessibilityLabel(store.queued ? "Cancel queued message" : "Stop reply")
+                        .buttonStyle(.plain).help("Stop the current reply").accessibilityLabel("Stop reply")
                         .disabled(!store.canStop || store.activity == "stopping")
                         .onHover { $0 ? NSCursor.pointingHand.set() : NSCursor.arrow.set() }
                 }
                 if store.hasDraft || !store.canStop {
-                    Button(action: store.ask) { Image(systemName: "arrow.up.circle.fill").font(.title2) }
-                        .buttonStyle(.plain).foregroundStyle(Color.accentColor).accessibilityLabel("Send question")
+                    Button(action: store.ask) { Image(systemName: store.willQueue ? "text.badge.plus" : "arrow.up.circle.fill").font(.title2) }
+                        .buttonStyle(.plain).foregroundStyle(Color.accentColor).accessibilityLabel(store.willQueue ? "Queue message" : "Send question")
+                        .help(store.willQueue ? "Add to queue (Return)" : "Send question (Return)")
                         .disabled(!store.canSend).onHover { $0 ? NSCursor.pointingHand.set() : NSCursor.arrow.set() }
                 }
             }
@@ -461,12 +524,12 @@ class ChatPanel: NSPanel {
         let key = event.charactersIgnoringModifiers?.lowercased()
         guard let store = meetingStore else { return super.performKeyEquivalent(with: event) }
         if key == "c", modifiers == .control {
-            if !event.isARepeat { store.stopReply() }
+            if !event.isARepeat { store.interruptFromKeyboard() }
             return true
         }
         if key == "v", modifiers == .control || modifiers == .command {
             if store.pasteImages(from: clipboard) { return true }
-            if store.connected, !store.queued, !store.sending, let text = clipboard.string(forType: .string) {
+            if store.connected, let text = clipboard.string(forType: .string) {
                 if let editor = firstResponder as? NSTextView, editor.isEditable {
                     editor.insertText(text, replacementRange: editor.selectedRange())
                 } else {
