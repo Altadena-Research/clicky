@@ -13,6 +13,7 @@ struct Invitation: Decodable, Equatable {
 private struct BridgeEvent: Decodable {
     let type: String
     let activity: String?
+    let activityItems: [MeetingWorkItem]?
     let sessions: [String]?
     let labels: [String: String]?
     let selected: String?
@@ -37,6 +38,12 @@ final class MeetingStore: ObservableObject {
     @Published var draft = ""
     @Published var images: [ChatImage] = []
     @Published var activity = "unknown"
+    @Published var activityItems: [MeetingWorkItem] = [] {
+        didSet { backgroundCountChanged?(backgroundCount) }
+    }
+    @Published var showingActivity = false
+    var backgroundCount: Int { activityItems.filter(\.isWorking).count }
+    var backgroundCountChanged: ((Int) -> Void)?
     @Published var queued = false
     private var submittedImages: [String] = []
     private var attachmentFolder: String?
@@ -92,6 +99,7 @@ final class MeetingStore: ObservableObject {
         child.terminationHandler = { [weak self] _ in
             DispatchQueue.main.async {
                 self?.connected = false
+                self?.activityItems = []
                 self?.sending = false
                 self?.error = "The local helper exited. Reopen Clicky Meeting to reconnect."
             }
@@ -240,6 +248,7 @@ final class MeetingStore: ObservableObject {
                 sessions = event.sessions ?? []
                 labels = event.labels ?? [:]
                 if selected != event.selected {
+                    showingActivity = false
                     if let selected { drafts[selected] = (draft, images) }
                     let restored = event.selected.flatMap { drafts.removeValue(forKey: $0) }
                     draft = restored?.0 ?? ""
@@ -249,6 +258,8 @@ final class MeetingStore: ObservableObject {
                 selected = event.selected
                 attachmentFolder = event.attachmentFolder
                 connected = event.connected == true
+                let items = connected ? event.activityItems ?? [] : []
+                if items != activityItems { activityItems = items }
                 activity = event.activity ?? "unknown"
                 if !connected { queued = false }
                 if queued && activity == "ready" { queued = false; ask() }
@@ -331,24 +342,42 @@ struct MeetingView: View {
             }
             if store.invitation != nil { InvitationView(store: store) }
             if let selected = store.selected {
-                Label(store.connected ? store.label(selected) : "Session disconnected",
-                      systemImage: store.connected ? "link" : "link.badge.plus")
-                    .font(.caption).foregroundStyle(.secondary)
+                HStack {
+                    Label(store.connected ? store.label(selected) : "Session disconnected",
+                          systemImage: store.connected ? "link" : "link.badge.plus")
+                        .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    Spacer(minLength: 4)
+                    if store.connected {
+                        Button { store.showingActivity.toggle() } label: {
+                            Label(store.backgroundCount > 0 ? "\(store.backgroundCount) working" : "Activity",
+                                  systemImage: "person.2")
+                                .font(.caption.weight(.semibold))
+                        }.buttonStyle(.plain)
+                            .foregroundStyle(store.backgroundCount > 0 || store.showingActivity ? Color.accentColor : Color.secondary)
+                            .accessibilityLabel("Meeting activity, \(store.backgroundCount) working in the background")
+                            .help("Show the paired terminal, agents, and background tasks")
+                            .onHover { $0 ? NSCursor.pointingHand.set() : NSCursor.arrow.set() }
+                    }
+                }
             }
             if let status = store.resumeStatus {
                 Label(status, systemImage: "waveform").font(.caption).foregroundStyle(.secondary)
             }
             Divider()
-            if store.messages.isEmpty {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(store.connected ? "Ready for your question" : "Connect your meeting").font(.headline)
-                    Text(store.connected ? "Replies from this Claude conversation appear here." :
-                        store.detectionError ?? "Start a Wispr Notetaker recording. Clicky will offer to open its Claude conversation.")
-                        .foregroundStyle(.secondary).textSelection(.enabled)
-                }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading).padding(.vertical, 12)
-            } else {
-                ConversationTranscript(messages: store.messages).id(store.selected)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            GeometryReader { area in
+                let open = store.showingActivity && store.connected
+                let wide = area.size.width >= 590
+                HStack(spacing: open && wide ? 12 : 0) {
+                    transcript
+                        .frame(width: open && !wide ? 0 : nil)
+                        .clipped().opacity(open && !wide ? 0 : 1)
+                        .accessibilityHidden(open && !wide)
+                    if open {
+                        MeetingActivityInspector(items: store.activityItems) { store.showingActivity = false }
+                            .frame(width: wide ? 244 : nil).frame(maxWidth: wide ? nil : .infinity)
+                            .id(store.selected)
+                    }
+                }.frame(width: area.size.width, height: area.size.height)
             }
             if let error = store.error, store.invitation == nil { Text(error).foregroundStyle(.red).font(.caption) }
             Divider()
@@ -405,6 +434,20 @@ struct MeetingView: View {
         }.padding(18).frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(.regularMaterial).onAppear { typing = true }
         .dropDestination(for: URL.self) { urls, _ in store.attachFiles(urls) }
+    }
+
+    @ViewBuilder private var transcript: some View {
+        if store.messages.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(store.connected ? "Ready for your question" : "Connect your meeting").font(.headline)
+                Text(store.connected ? "Replies from this Claude conversation appear here." :
+                    store.detectionError ?? "Start a Wispr Notetaker recording. Clicky will offer to open its Claude conversation.")
+                    .foregroundStyle(.secondary).textSelection(.enabled)
+            }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading).padding(.vertical, 12)
+        } else {
+            ConversationTranscript(messages: store.messages).id(store.selected)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
     }
 }
 
@@ -472,19 +515,46 @@ class ChatPanel: NSPanel {
 
 private final class MeetingCharacterView: NSImageView {
     var clicked: (() -> Void)?
+    var activityClicked: (() -> Void)?
     var moved: (() -> Void)?
     private var start = NSPoint.zero
     private var original = NSPoint.zero
     private var dragging = false
+    private var pressedBadge = false
+    var working = 0 {
+        didSet {
+            needsDisplay = true
+            toolTip = working > 0 ? "\(working) working in the background. Click the count for activity." :
+                "Click Marcus for your meeting. Drag to move."
+        }
+    }
+    private var badgeFrame: NSRect {
+        let width: CGFloat = working >= 10 ? 24 : 17
+        return NSRect(x: bounds.maxX - width, y: isFlipped ? bounds.minY : bounds.maxY - 16,
+                      width: width, height: 16)
+    }
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        guard working > 0 else { return }
+        NSColor.controlAccentColor.setFill()
+        NSBezierPath(roundedRect: badgeFrame, xRadius: 8, yRadius: 8).fill()
+        let number = NSAttributedString(string: working > 99 ? "99+" : String(working),
+                                        attributes: [.font: NSFont.boldSystemFont(ofSize: 10), .foregroundColor: NSColor.white])
+        let size = number.size()
+        number.draw(at: NSPoint(x: badgeFrame.midX - size.width / 2, y: badgeFrame.midY - size.height / 2))
+    }
     override func isAccessibilityElement() -> Bool { true }
     override func accessibilityRole() -> NSAccessibility.Role? { .button }
-    override func accessibilityLabel() -> String? { "Open meeting companion" }
+    override func accessibilityLabel() -> String? {
+        working > 0 ? "Open meeting companion, \(working) working in the background" : "Open meeting companion"
+    }
     override func accessibilityPerformPress() -> Bool { clicked?(); return true }
     override func resetCursorRects() { addCursorRect(bounds, cursor: .pointingHand) }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
     override func mouseDown(with event: NSEvent) {
         start = NSEvent.mouseLocation
         original = window?.frame.origin ?? .zero
+        pressedBadge = working > 0 && badgeFrame.contains(convert(event.locationInWindow, from: nil))
         dragging = false
     }
     override func mouseDragged(with event: NSEvent) {
@@ -496,7 +566,10 @@ private final class MeetingCharacterView: NSImageView {
             moved?()
         }
     }
-    override func mouseUp(with event: NSEvent) { if !dragging { clicked?() } }
+    override func mouseUp(with event: NSEvent) {
+        guard !dragging else { return }
+        if pressedBadge { activityClicked?() } else { clicked?() }
+    }
 }
 
 @MainActor
@@ -519,6 +592,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         characterView.imageScaling = .scaleProportionallyUpOrDown
         characterView.toolTip = "Click Marcus for your meeting. Drag to move."
         characterView.clicked = { [weak self] in self?.toggleChat() }
+        characterView.activityClicked = { [weak self] in
+            self?.store.showingActivity = true
+            self?.showChat()
+        }
+        store.backgroundCountChanged = { [weak characterView] count in
+            if characterView?.working != count { characterView?.working = count }
+        }
         characterView.moved = { [weak self] in self?.placePanels() }
         character.contentView = characterView
         let area = NSScreen.main?.visibleFrame ?? .zero

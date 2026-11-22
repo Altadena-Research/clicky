@@ -12,6 +12,10 @@ Paste text or a copied screenshot with **⌘V** or **Ctrl+V**. On macOS, **Contr
 
 Drag from any word in the conversation to a word in an earlier or later reply, then press **⌘C**. The copied text includes the speaker labels you highlighted along the way. The same drag works across paragraphs, lists, code, and tables.
 
+Click **Activity** beside the session name to inspect the paired terminal, Claude agents, background shells, listeners, and linked Codex jobs. Expand a row for its state, ID, and available thread or update details. Wide panels show activity beside the chat. Narrow panels show it in the transcript area and keep the composer available. Click **Close activity** to return.
+
+A count on Marcus shows running background agents and jobs. Clicking the count opens activity directly. The panel lists the main terminal, queued jobs, idle agents, and listeners separately. The local helper follows Claude’s task records, the Codex companion’s job registry, and descendant threads recorded for those jobs. **Unconfirmed** means those sources could not establish a current state.
+
 The composer distinguishes a message waiting for Claude from a running turn. Sending a follow-up while Claude is working queues it in the current composer. **Ctrl+C** or the square **Stop** button cancels that queued send and keeps the draft. During a reply it requests an interruption in the paired terminal. Clicky waits for Claude’s status to settle.
 
 When tmux is installed, new Clicky conversations use a dedicated tmux pane inside the normal terminal window. Existing iTerm2 sessions can receive Stop through macOS Automation. If macOS declines the request or the terminal host does not support targeted input, press **Esc** in the Claude terminal.

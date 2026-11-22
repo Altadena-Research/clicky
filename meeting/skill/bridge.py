@@ -18,6 +18,7 @@ import uuid
 
 from recordings import Invitations, PREFERENCES, read_object
 from chat_controls import SessionActivity, interrupt, phase
+from meeting_activity import MeetingActivity
 
 ROOT = Path(os.environ.get("CLICKY_RUNTIME_DIR", f"/tmp/clicky-meeting-{os.getuid()}"))
 PROJECTS = Path(os.environ.get("CLAUDE_CONFIG_DIR", str(Path.home() / ".claude"))) / "projects"
@@ -269,6 +270,7 @@ def ui():
     messages = []
     questions = {}
     registry = SessionActivity()
+    work = MeetingActivity()
     flights = {}
     stops = {}
     incoming = b""
@@ -286,6 +288,7 @@ def ui():
             if selected not in available:
                 log, fingerprint = None, None
             entry = registry.entry(selected) if selected in available else {}
+            activity_items = work.snapshot(selected if selected in available else None, log, entry)
             folder = attachment_folder(selected, entry) if selected in available else None
             if log:
                 try:
@@ -346,7 +349,7 @@ def ui():
             state = {"type": "view", "activity": activity, "resumeStatus": resume_status, "sessions": available, "labels": labels, "selected": selected,
                      "connected": selected in available, "messages": combined[-40:], "invitation": invitation,
                      "project": invitations.project, "attachmentFolder": str(folder) if folder else None,
-                     "detectionError": invitations.problem}
+                     "detectionError": invitations.problem, "activityItems": activity_items}
             if state != previous:
                 emit(state)
                 previous = state

@@ -147,5 +147,46 @@ struct ComposerTests {
         precondition(board.string(forType: .string) == acrossReplies)
         precondition(store.activity == "ready" && store.draft == "paste\ntext")
         print("Passed cross-reply dragging down, up, and back across the anchor, Cmd+C, and selection during a transcript refresh.")
+
+        func workItem(_ kind: String, _ status: String) -> MeetingWorkItem {
+            MeetingWorkItem(id: kind, reference: kind, kind: kind, title: "Fixture", status: status,
+                            updated: nil, detail: nil, thread: nil)
+        }
+        store.activityItems = [workItem("terminal", "running"), workItem("listener", "listening"),
+                               workItem("codexJob", "running"), workItem("claudeAgent", "running"),
+                               workItem("codexAgent", "idle"), workItem("shell", "queued")]
+        precondition(store.backgroundCount == 2)
+        func buttonClick(at point: NSPoint) {
+            func click(_ type: NSEvent.EventType) -> NSEvent {
+                NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                   windowNumber: panel.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1)!
+            }
+            NSApp.postEvent(click(.leftMouseUp), atStart: true)
+            panel.sendEvent(click(.leftMouseDown))
+            if let release = NSApp.nextEvent(matching: .leftMouseUp, until: .distantPast, inMode: .default, dequeue: true) {
+                panel.sendEvent(release)
+            }
+            RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        }
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        let transcriptScroll = view.enclosingScrollView!
+        let transcriptTop = transcriptScroll.convert(transcriptScroll.bounds, to: nil).maxY
+        buttonClick(at: NSPoint(x: panel.contentLayoutRect.maxX - 45, y: transcriptTop + 32))
+        precondition(store.showingActivity, "The activity button should open the drawer")
+        func setWidth(_ width: CGFloat) -> CGFloat {
+            panel.setContentSize(NSSize(width: width, height: 600))
+            RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+            host.layoutSubtreeIfNeeded()
+            return view.enclosingScrollView!.bounds.width
+        }
+        let beside = setWidth(780)
+        precondition(beside > 350 && beside < 600, "Inspector should sit beside wide chat: \(beside)")
+        let compact = setWidth(380)
+        precondition(compact < 2, "Inspector should take the compact transcript area: \(compact)")
+        let top = transcriptScroll.convert(transcriptScroll.bounds, to: nil).maxY
+        buttonClick(at: NSPoint(x: panel.contentLayoutRect.maxX - 46, y: top + 32))
+        precondition(!store.showingActivity)
+        precondition(setWidth(380) > 260 && store.draft == "paste\ntext")
+        print("Passed working count and wide and compact activity drawers, with the composer draft preserved.")
     }
 }
